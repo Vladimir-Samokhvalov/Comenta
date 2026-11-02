@@ -367,7 +367,7 @@ test.describe('lifecycle & isolation', () => {
     const ta = await w.textarea.evaluate((el) => getComputedStyle(el).fontSize);
     expect(ta).toBe('14px');
     const pop = (await w.popover.boundingBox())!;
-    expect(Math.round(pop.width)).toBe(320);
+    expect(Math.round(pop.width)).toBe(344);
   });
 
   test('script tag build auto-initialises from data attributes', async ({ page }) => {
@@ -474,5 +474,74 @@ test.describe('toolbar menu & comments panel', () => {
     await w.toggle.hover();
     await expect(page.locator('pinhelp-feedback .ph-tip')).toHaveCSS('opacity', '1');
     await expect(page.locator('pinhelp-feedback .ph-tip')).toContainText('Комментировать');
+  });
+});
+
+test.describe('emoji category', () => {
+  test('optional: none by default, toggles, clears on second click, keyboard, sent without kind', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    const kind = (k: string) => page.locator(`pinhelp-feedback .ph-kind[data-kind="${k}"]`);
+    await w.toggle.click();
+    await page.locator('#inc').click();
+    await expect(page.locator('pinhelp-feedback .ph-kinds')).toHaveAttribute('role', 'group');
+    for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Ошибка']]) {
+      await expect(kind(k)).toHaveText(emoji);
+      await expect(kind(k)).toHaveAttribute('aria-label', label);
+      await expect(kind(k)).toHaveAttribute('title', label);
+      await expect(kind(k)).toHaveAttribute('aria-pressed', 'false');
+    }
+    await kind('suggestion').click();
+    await expect(kind('suggestion')).toHaveAttribute('aria-pressed', 'true');
+    await kind('bug').click();
+    await expect(kind('suggestion')).toHaveAttribute('aria-pressed', 'false');
+    await expect(kind('bug')).toHaveAttribute('aria-pressed', 'true');
+    await kind('bug').click();
+    await expect(kind('bug')).toHaveAttribute('aria-pressed', 'false');
+
+    // keyboard: arrows move between emoji, Space toggles
+    await kind('question').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(kind('suggestion')).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(kind('suggestion')).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Space');
+    await expect(kind('suggestion')).toHaveAttribute('aria-pressed', 'false');
+
+    await w.textarea.fill('Без категории');
+    const req = page.waitForRequest((r) => r.url().endsWith('/api/feedback') && r.method() === 'POST');
+    await w.submit.click();
+    const payload = (await req).postDataJSON();
+    expect('kind' in payload).toBe(false);
+
+    // pin is terracotta, view and list show no category
+    const pin = w.pins.first();
+    await expect(pin).not.toHaveAttribute('data-kind', /.+/);
+    expect(await pin.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(201, 100, 66)');
+    await page.keyboard.press('Escape');
+    await pin.click();
+    await expect(page.locator('pinhelp-feedback .ph-badge')).toHaveText('#1');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => (window as any).fb.showComments());
+    await expect(page.locator('pinhelp-feedback .ph-item-meta').first()).not.toContainText('Предложение');
+  });
+
+  test('picked category is sent and shown with its emoji', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await w.toggle.click();
+    await page.locator('#inc').click();
+    await page.locator('pinhelp-feedback .ph-kind[data-kind="question"]').click();
+    await w.textarea.fill('Что это?');
+    const req = page.waitForRequest((r) => r.url().endsWith('/api/feedback') && r.method() === 'POST');
+    await w.submit.click();
+    expect((await req).postDataJSON().kind).toBe('question');
+    await page.keyboard.press('Escape');
+    await expect(w.pins.first()).toHaveAttribute('data-kind', 'question');
+    await w.pins.first().click();
+    await expect(page.locator('pinhelp-feedback .ph-badge')).toHaveText('#1 · 🤔 Вопрос');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => (window as any).fb.showComments());
+    await expect(page.locator('pinhelp-feedback .ph-item-meta').first()).toContainText('🤔 Вопрос');
   });
 });

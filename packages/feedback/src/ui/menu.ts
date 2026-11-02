@@ -146,7 +146,7 @@ export class Panel {
     }
     const rows = items.map((it) => {
       const p = it.payload;
-      const meta: Array<Node | string> = [this.labels.kinds[p.kind] ?? p.kind, ' · ', relativeTime(p.createdAt, this.labels.locale), ' · '];
+      const meta: Array<Node | string> = [...(p.kind ? [`${this.labels.kindEmoji[p.kind]} ${this.labels.kinds[p.kind] ?? p.kind}`, ' · '] : []), relativeTime(p.createdAt, this.labels.locale), ' · '];
       for (const a of p.attachments ?? []) {
         meta.push(h(d, 'span', { class: 'ph-att', 'data-kind': a.kind }, [`${a.kind === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel} ${formatDuration(a.durationMs)}`]), ' · ');
       }
@@ -154,7 +154,7 @@ export class Panel {
       else if (it.missing) meta.push(h(d, 'span', { class: 'ph-missing' }, [this.labels.notFound]));
       else meta.push(h(d, 'code', {}, [shortSelector(p.target.selector)]));
       const row = h(d, 'button', { type: 'button', role: 'listitem', class: `ph-item${it.missing ? ' ph-item-missing' : ''}`, 'data-id': p.id }, [
-        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind }, [it.n === null ? '' : String(it.n)]),
+        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind ?? null }, [it.n === null ? '' : String(it.n)]),
         h(d, 'span', { class: 'ph-item-body' }, [h(d, 'span', { class: 'ph-item-text' }, [p.text || (p.attachments?.[0]?.kind === 'screen' ? this.labels.recScreen : this.labels.recVoice)]), h(d, 'span', { class: 'ph-item-meta' }, meta)]),
       ]);
       row.addEventListener('click', () => this.handlers.onPick(it));

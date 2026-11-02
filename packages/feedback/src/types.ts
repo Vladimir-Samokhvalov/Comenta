@@ -10,7 +10,8 @@ export interface FeedbackRect {
 export interface FeedbackPayload {
   /** uuid, generated on the client */
   id: string;
-  kind: FeedbackKind;
+  /** Optional category; absent when the author did not pick one. */
+  kind?: FeedbackKind;
   text: string;
   /** ISO 8601 */
   createdAt: string;
@@ -95,6 +96,7 @@ export interface FeedbackLabels {
   toggleActive: string;
   count: (n: number) => string;
   kinds: Record<FeedbackKind, string>;
+  kindEmoji: Record<FeedbackKind, string>;
   kindGroup: string;
   textarea: string;
   placeholder: string;

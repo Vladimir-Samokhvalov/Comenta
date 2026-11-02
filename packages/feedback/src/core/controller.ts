@@ -71,7 +71,7 @@ export class Controller {
     this.options = { ...options };
     this.adapter = options.adapter ?? consoleAdapter();
     this.ignoreSelector = options.ignoreSelector ?? DEFAULT_IGNORE_SELECTOR;
-    this.labels = { ...DEFAULT_LABELS, ...options.labels, kinds: { ...DEFAULT_LABELS.kinds, ...options.labels?.kinds } };
+    this.labels = { ...DEFAULT_LABELS, ...options.labels, kinds: { ...DEFAULT_LABELS.kinds, ...options.labels?.kinds }, kindEmoji: { ...DEFAULT_LABELS.kindEmoji, ...options.labels?.kindEmoji } };
     this.url = normalizeUrl(this.win.location.href);
 
     this.api = {
@@ -468,14 +468,14 @@ export class Controller {
 
   // ---------------------------------------------------------------- submit
 
-  private buildPayload(kind: FeedbackKind, text: string, files: FeedbackFile[]): FeedbackPayload | null {
+  private buildPayload(kind: FeedbackKind | null, text: string, files: FeedbackFile[]): FeedbackPayload | null {
     const el = this.selectedEl;
     const target = el && el.isConnected ? describeTarget(el, this.ignoreSelector) : this.selectedSnapshot;
     if (!target) return null;
     const nav = this.win.navigator;
     const payload: FeedbackPayload = {
       id: uuid(),
-      kind,
+      ...(kind ? { kind } : {}),
       text,
       createdAt: new Date().toISOString(),
       page: {
@@ -506,7 +506,7 @@ export class Controller {
     return [{ attachment, blob: recording.blob }];
   }
 
-  private async submit(kind: FeedbackKind, text: string, recording: Recording | null = null) {
+  private async submit(kind: FeedbackKind | null, text: string, recording: Recording | null = null) {
     const popover = this.popover;
     if (!popover || !this.view) return;
     const files = this.toFiles(recording);
@@ -593,7 +593,7 @@ export class Controller {
       }
       n++;
       if (!c.pin) {
-        const pin = h(this.doc, 'button', { type: 'button', class: 'ph-pin', 'data-kind': c.payload.kind, hidden: true });
+        const pin = h(this.doc, 'button', { type: 'button', class: 'ph-pin', 'data-kind': c.payload.kind ?? null, hidden: true });
         pin.addEventListener('click', () => this.openComment(c));
         this.view.pinLayer.append(pin);
         c.pin = pin;

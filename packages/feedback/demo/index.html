@@ -138,7 +138,7 @@
     window.fb = initFeedback({
       adapter: adapters[select.value](),
       author: { id: 'demo', name: 'Демо-пользователь' },
-      onSubmit: (p) => { window.__lastPayload = p; log(`отправлено: ${p.kind} → ${p.target.selector}`); },
+      onSubmit: (p) => { window.__lastPayload = p; log(`отправлено: ${p.kind ?? 'без категории'} → ${p.target.selector}`); },
       onError: (e) => log(`ошибка: ${e.message}`),
     });
     select.addEventListener('change', () => window.fb.update({ adapter: adapters[select.value]() }));

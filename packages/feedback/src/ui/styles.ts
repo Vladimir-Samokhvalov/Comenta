@@ -192,7 +192,7 @@ export const STYLES = /* css */ `
 /* Popover */
 .ph-popover {
   position: fixed; top: 0; left: 0;
-  width: 320px; max-width: calc(100vw - 16px);
+  width: 344px; max-width: calc(100vw - 16px);
   padding: 12px; border-radius: 12px;
   background: var(--ph-bg); color: var(--ph-ink);
   border: 1px solid var(--ph-line);
@@ -200,15 +200,21 @@ export const STYLES = /* css */ `
   pointer-events: auto;
   display: flex; flex-direction: column; gap: 10px;
 }
-.ph-kinds { display: flex; gap: 4px; padding: 3px; border-radius: 8px; background: rgba(127,127,127,.12); border: 0; margin: 0; min-width: 0; }
-.ph-kind { flex: 1; position: relative; display: block; cursor: pointer; }
-.ph-kind input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
-.ph-kind span {
-  display: block; text-align: center; padding: 4px 6px; border-radius: 6px;
-  font-size: 13px; line-height: 18px; color: var(--ph-muted);
+.ph-kinds { display: flex; gap: 2px; margin-right: auto; flex: none; }
+.ph-kind {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0; margin: 0; border: 0; border-radius: 8px;
+  background: transparent; cursor: pointer;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 18px; line-height: 1;
+  appearance: none; -webkit-appearance: none;
+  transition: background .12s, opacity .12s, filter .12s, transform .12s;
 }
-.ph-kind input:checked + span { background: var(--ph-bg); color: var(--ph-ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 500; }
-.ph-kind input:focus-visible + span { outline: 2px solid var(--ph-accent); outline-offset: 1px; }
+.ph-kind:hover { background: var(--ph-hover); }
+.ph-kind[aria-pressed="true"] { background: rgba(var(--ph-accent-rgb), .14); transform: scale(1.06); }
+/* once a category is picked, the other two step back */
+.ph-kinds:has([aria-pressed="true"]) .ph-kind:not([aria-pressed="true"]):not(:hover) { opacity: .45; filter: grayscale(1); }
+.ph-kind:focus-visible { outline: 2px solid var(--ph-accent); outline-offset: 1px; }
 .ph-textarea {
   display: block; width: 100%; min-height: 72px; max-height: 240px; margin: 0;
   padding: 8px 10px; border-radius: 8px;

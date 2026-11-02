@@ -81,7 +81,7 @@ const server = createServer(async (req, res) => {
         }
         await appendFile(LOG, `${JSON.stringify(payload)}\n`);
         const files = Object.values(urls);
-        console.log(`[feedback] ${payload.kind}: "${payload.text}" → ${payload.target.selector}${files.length ? ` + ${files.join(', ')}` : ''}`);
+        console.log(`[feedback] ${payload.kind ?? 'без категории'}: "${payload.text}" → ${payload.target.selector}${files.length ? ` + ${files.join(', ')}` : ''}`);
         res.writeHead(201, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, id: payload.id, attachments: urls }));
         return;
       }

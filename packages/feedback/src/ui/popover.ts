@@ -8,10 +8,9 @@ import type { Rect } from './view';
 const KINDS: FeedbackKind[] = ['question', 'suggestion', 'bug'];
 const FOCUSABLE =
   'button:not([disabled]):not([hidden]), textarea:not([disabled]), input:not([disabled]), audio[controls], video[controls], [tabindex]:not([tabindex="-1"])';
-let seq = 0;
 
 export interface PopoverHandlers {
-  onSubmit: (kind: FeedbackKind, text: string, recording: Recording | null) => void;
+  onSubmit: (kind: FeedbackKind | null, text: string, recording: Recording | null) => void;
   onCancel: () => void;
 }
 
@@ -27,10 +26,9 @@ export class Popover {
   private submitBtn: HTMLButtonElement | null = null;
   private cancelBtn: HTMLButtonElement | null = null;
   private errorEl: HTMLDivElement | null = null;
-  private kind: FeedbackKind = 'suggestion';
+  private kind: FeedbackKind | null = null;
   private submitting = false;
   private rec: RecordControl | null = null;
-  private readonly name = `ph-kind-${++seq}`;
 
   constructor(
     private readonly doc: Document,
@@ -59,17 +57,30 @@ export class Popover {
     this.mode = 'compose';
     this.viewing = null;
     this.submitting = false;
-    this.kind = 'suggestion';
+    this.kind = null;
 
-    const kinds = h(d, 'div', { class: 'ph-kinds', role: 'radiogroup', 'aria-label': this.labels.kindGroup });
+    // Optional category: three emoji toggles, at most one pressed; clicking the pressed one clears it.
+    const kinds = h(d, 'div', { class: 'ph-kinds', role: 'group', 'aria-label': this.labels.kindGroup });
+    const buttons: HTMLButtonElement[] = [];
     for (const k of KINDS) {
-      const input = h(d, 'input', { type: 'radio', name: this.name, value: k, 'aria-label': this.labels.kinds[k] });
-      input.checked = k === this.kind;
-      input.addEventListener('change', () => {
-        if (input.checked) this.kind = k;
+      const b = h(d, 'button', { type: 'button', class: 'ph-kind', 'data-kind': k, 'aria-pressed': 'false', 'aria-label': this.labels.kinds[k], title: this.labels.kinds[k] }, [
+        this.labels.kindEmoji[k],
+      ]);
+      b.addEventListener('click', () => {
+        this.kind = this.kind === k ? null : k;
+        for (const o of buttons) o.setAttribute('aria-pressed', String(o.dataset.kind === this.kind));
       });
-      kinds.append(h(d, 'label', { class: 'ph-kind', 'data-kind': k }, [input, h(d, 'span', {}, [this.labels.kinds[k]])]));
+      buttons.push(b);
     }
+    kinds.append(...buttons);
+    kinds.addEventListener('keydown', (e) => {
+      const i = buttons.indexOf(e.target as HTMLButtonElement);
+      if (i < 0) return;
+      const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+      if (!step) return;
+      e.preventDefault();
+      buttons[(i + step + buttons.length) % buttons.length].focus();
+    });
 
     const ta = h(d, 'textarea', { class: 'ph-textarea', rows: 3, 'aria-label': this.labels.textarea, placeholder: this.labels.placeholder });
     ta.addEventListener('input', () => {
@@ -83,13 +94,13 @@ export class Popover {
     const isMac = /Mac|iPhone|iPad/.test(d.defaultView?.navigator.platform ?? '');
     this.cancelBtn = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.cancel }, [this.labels.cancel]);
     this.cancelBtn.addEventListener('click', () => this.handlers.onCancel());
-    this.submitBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary', 'aria-label': this.labels.submit, disabled: true }, [
+    this.submitBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary', 'aria-label': this.labels.submit, title: isMac ? '⌘↵' : 'Ctrl+↵', disabled: true }, [
       this.labels.submit,
     ]);
     this.submitBtn.addEventListener('click', () => this.trySubmit());
 
     const actions = h(d, 'div', { class: 'ph-actions' }, [
-      h(d, 'span', { class: 'ph-hint', 'aria-hidden': 'true' }, [isMac ? '⌘↵' : 'Ctrl+↵']),
+      kinds,
       this.cancelBtn,
       this.submitBtn,
     ]);
@@ -108,7 +119,7 @@ export class Popover {
       actions.insertBefore(this.rec.button, this.submitBtn);
     }
 
-    this.el.replaceChildren(kinds, ta, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
+    this.el.replaceChildren(ta, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
     this.el.hidden = false;
     ta.focus({ preventScroll: true });
   }
@@ -131,7 +142,7 @@ export class Popover {
     const media = payload.attachments?.length ? attachmentsView(d, payload.attachments, this.labels) : null;
     this.el.replaceChildren(
       h(d, 'div', { class: 'ph-view-head' }, [
-        h(d, 'span', { class: 'ph-badge' }, [`#${n} · ${this.labels.kinds[payload.kind] ?? payload.kind}`]),
+        h(d, 'span', { class: 'ph-badge' }, [payload.kind ? `#${n} · ${this.labels.kindEmoji[payload.kind]} ${this.labels.kinds[payload.kind]}` : `#${n}`]),
         h(d, 'span', { class: 'ph-meta' }, [when]),
       ]),
       ...(text ? [text] : []),
@@ -182,7 +193,7 @@ export class Popover {
   }
 
   position(anchor: Rect, viewport: { width: number; height: number }) {
-    const w = this.el.offsetWidth || 320;
+    const w = this.el.offsetWidth || 344;
     const hgt = this.el.offsetHeight || 180;
     const p = placePopover(anchor, { width: w, height: hgt }, viewport);
     this.el.style.transform = `translate(${p.left}px, ${p.top}px)`;
