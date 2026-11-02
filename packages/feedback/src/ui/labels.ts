@@ -12,7 +12,7 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   toggle: 'Комментировать',
   toggleActive: 'Выйти из режима комментариев',
   count: (n) => `${n} ${plural(n, 'комментарий', 'комментария', 'комментариев')} на странице`,
-  kinds: { question: 'Вопрос', suggestion: 'Предложение', bug: 'Ошибка' },
+  kinds: { question: 'Вопрос', suggestion: 'Предложение', bug: 'Проблема' },
   kindEmoji: { question: '🤔', suggestion: '🚀', bug: '😢' },
   kindGroup: 'Категория (необязательно)',
   textarea: 'Текст комментария',

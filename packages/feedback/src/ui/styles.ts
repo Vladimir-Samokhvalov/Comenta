@@ -213,7 +213,8 @@ export const STYLES = /* css */ `
 .ph-kind:hover { background: var(--ph-hover); }
 .ph-kind[aria-pressed="true"] { background: rgba(var(--ph-accent-rgb), .14); transform: scale(1.06); }
 /* once a category is picked, the other two step back */
-.ph-kinds:has([aria-pressed="true"]) .ph-kind:not([aria-pressed="true"]):not(:hover) { opacity: .45; filter: grayscale(1); }
+/* data-picked is set from JS: :has() inside shadow roots is not re-evaluated reliably in every engine */
+.ph-kinds[data-picked] .ph-kind:not([aria-pressed="true"]):not(:hover) { opacity: .45; filter: grayscale(1); }
 .ph-kind:focus-visible { outline: 2px solid var(--ph-accent); outline-offset: 1px; }
 .ph-textarea {
   display: block; width: 100%; min-height: 72px; max-height: 240px; margin: 0;

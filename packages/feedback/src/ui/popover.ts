@@ -74,6 +74,7 @@ export class Popover {
       b.addEventListener('click', () => {
         this.kind = this.kind === k ? null : k;
         for (const o of buttons) o.setAttribute('aria-pressed', String(o.dataset.kind === this.kind));
+        kinds.toggleAttribute('data-picked', this.kind !== null);
       });
       buttons.push(b);
     }

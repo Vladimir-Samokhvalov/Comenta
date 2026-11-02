@@ -485,7 +485,7 @@ test.describe('emoji category', () => {
     await w.toggle.click();
     await page.locator('#inc').click();
     await expect(page.locator('pinhelp-feedback .ph-kinds')).toHaveAttribute('role', 'group');
-    for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Ошибка']]) {
+    for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Проблема']]) {
       await expect(kind(k)).toHaveText(emoji);
       await expect(kind(k)).toHaveAttribute('aria-label', label);
       await expect(kind(k)).toHaveAttribute('title', label);
@@ -524,6 +524,31 @@ test.describe('emoji category', () => {
     await page.keyboard.press('Escape');
     await page.evaluate(() => (window as any).fb.showComments());
     await expect(page.locator('pinhelp-feedback .ph-item-meta').first()).not.toContainText('Предложение');
+  });
+
+  test('other emoji turn grey right after picking (no hover needed) and get colour back after un-picking', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await w.toggle.click();
+    await page.locator('#inc').click();
+    const kind = (k: string) => page.locator(`pinhelp-feedback .ph-kind[data-kind="${k}"]`);
+    const look = (k: string) => kind(k).evaluate((el) => ({ o: getComputedStyle(el).opacity, f: getComputedStyle(el).filter }));
+    const away = () => page.mouse.move(5, 5);
+
+    await kind('bug').click();
+    await away();
+    await expect.poll(() => look('question')).toEqual({ o: '0.45', f: 'grayscale(1)' });
+    await expect.poll(() => look('suggestion')).toEqual({ o: '0.45', f: 'grayscale(1)' });
+    expect(await look('bug')).toEqual({ o: '1', f: 'none' });
+
+    await kind('suggestion').click(); // switch
+    await away();
+    await expect.poll(() => look('bug')).toEqual({ o: '0.45', f: 'grayscale(1)' });
+    expect(await look('suggestion')).toEqual({ o: '1', f: 'none' });
+
+    await kind('suggestion').click(); // un-pick
+    await away();
+    for (const k of ['question', 'suggestion', 'bug']) await expect.poll(() => look(k)).toEqual({ o: '1', f: 'none' });
   });
 
   test('picked category is sent and shown with its emoji', async ({ page }) => {
