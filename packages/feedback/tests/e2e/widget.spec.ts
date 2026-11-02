@@ -52,6 +52,25 @@ test.describe('comment mode', () => {
     await w.pins.first().click();
     await expect(w.popover).toContainText('Статус Бориса неверный');
     await expect(w.textarea).toHaveCount(0);
+
+    // the commented element is framed while its comment is open, and the frame follows it
+    const td = page.locator('#table-section td', { hasText: 'Борис' });
+    const frameMatches = async () => {
+      const f = (await w.selBox.boundingBox())!;
+      const e = (await td.boundingBox())!;
+      return Math.abs(f.x - e.x) < 2 && Math.abs(f.y - e.y) < 2 && Math.abs(f.width - e.width) < 2;
+    };
+    await expect(w.selBox).toBeVisible();
+    expect(await frameMatches()).toBe(true);
+    await page.mouse.wheel(0, 120);
+    await page.waitForTimeout(100);
+    expect(await frameMatches()).toBe(true);
+    await page.setViewportSize({ width: 1000, height: 760 });
+    await page.waitForTimeout(100);
+    expect(await frameMatches()).toBe(true);
+    await page.locator('pinhelp-feedback .ph-popover .ph-btn').click(); // «Закрыть»
+    await expect(w.popover).toBeHidden();
+    await expect(w.selBox).toBeHidden();
   });
 
   test('highlight follows the cursor and ignores the widget', async ({ page }) => {
@@ -392,7 +411,12 @@ test.describe('toolbar menu & comments panel', () => {
     await expect(w.panel).toBeHidden();
     await expect(page.locator('#anchor p')).toBeInViewport();
     await expect(w.popover).toContainText('Второй, внизу страницы');
+    await expect(w.selBox).toBeVisible();
+    const f = (await w.selBox.boundingBox())!;
+    const e = (await page.locator('#anchor p').boundingBox())!;
+    expect(Math.abs(f.y - e.y)).toBeLessThan(2);
     await page.keyboard.press('Escape');
+    await expect(w.selBox).toBeHidden();
 
     // hide / show pins
     await w.more.click();

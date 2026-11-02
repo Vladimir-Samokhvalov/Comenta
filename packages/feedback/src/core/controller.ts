@@ -597,12 +597,11 @@ export class Controller {
     const hover = this.hoverEl && this.hoverEl.isConnected && this.hoverEl !== this.selectedEl ? this.hoverEl : null;
     view.showHover(hover ? rectOf(hover) : null, hover ? describeTag(hover) : '');
     const sel = this.selectedEl && this.selectedEl.isConnected ? rectOf(this.selectedEl) : null;
-    view.showSelection(sel);
 
     // pins
     const resolveAll = this.dirty;
     this.dirty = false;
-    let viewingAnchor: Rect | null = null;
+    let viewingRect: Rect | null = null;
     for (const c of this.pageComments()) {
       if (!c.pin) continue;
       if (resolveAll || !c.el || !c.el.isConnected) {
@@ -618,14 +617,19 @@ export class Controller {
       const left = Math.max(r.left, r.left + r.width - 14);
       const top = r.top - 10;
       c.pin.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
-      if (popover.viewing === c.payload.id) viewingAnchor = { top, left, width: 24, height: 24 };
+      if (popover.viewing === c.payload.id) {
+        viewingRect = r;
+      }
     }
+
+    // selection frame: the element being commented on, or the one whose comment is open
+    view.showSelection(sel ?? (popover.mode === 'view' ? viewingRect : null));
 
     // popover
     if (popover.mode === 'compose' && sel) popover.position(sel, vp);
     else if (popover.mode === 'compose' && !this.selectedEl?.isConnected) {
       /* element vanished: keep the popover where it was so the draft is not lost */
-    } else if (popover.mode === 'view' && viewingAnchor) popover.position(viewingAnchor, vp);
+    } else if (popover.mode === 'view' && viewingRect) popover.position(viewingRect, vp); // next to the element, not over it
   }
 }
 
