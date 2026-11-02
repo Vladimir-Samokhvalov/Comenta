@@ -58,6 +58,48 @@ async function openForm(page: Page, query = '') {
 }
 
 test.describe('recording', () => {
+  test('record button sits in the bottom-right corner of the text field; text never runs under it', async ({ page }) => {
+    await openForm(page);
+    const w = widget(page);
+    const r = rec(page);
+    await w.textarea.fill('Очень длинный комментарий, '.repeat(12));
+    const ta = (await w.textarea.boundingBox())!;
+    const b = (await r.btn.boundingBox())!;
+    // inside the field, hugging its bottom-right corner
+    expect(b.x).toBeGreaterThan(ta.x + ta.width / 2);
+    expect(b.x + b.width).toBeLessThanOrEqual(ta.x + ta.width);
+    expect(ta.x + ta.width - (b.x + b.width)).toBeLessThan(12);
+    expect(b.y + b.height).toBeLessThanOrEqual(ta.y + ta.height);
+    expect(ta.y + ta.height - (b.y + b.height)).toBeLessThan(12);
+    // padding keeps text clear of the button
+    const pad = await w.textarea.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { right: parseFloat(cs.paddingRight), bottom: parseFloat(cs.paddingBottom) };
+    });
+    expect(pad.right).toBeGreaterThanOrEqual(b.width + 6);
+    expect(pad.bottom).toBeGreaterThanOrEqual(b.height);
+    await expect(r.btn).toBeVisible();
+    // actions row: emojis, cancel, send — no record button there
+    const actions = page.locator('pinhelp-feedback .ph-popover .ph-actions');
+    await expect(actions.locator('.ph-rec-btn')).toHaveCount(0);
+    await expect(actions.locator('.ph-kind')).toHaveCount(3);
+    await expect(actions.locator('.ph-btn')).toHaveText(['Отмена', 'Отправить']);
+    // focus order: textarea → record button → first emoji
+    await w.textarea.focus();
+    await page.keyboard.press('Tab');
+    await expect(r.btn).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(actions.locator('.ph-kind').first()).toBeFocused();
+    // voice recording bar shows below the field without covering it
+    await hold(page);
+    await expect(r.bar).toBeVisible();
+    const bar = (await r.bar.boundingBox())!;
+    const ta2 = (await w.textarea.boundingBox())!;
+    expect(bar.y).toBeGreaterThanOrEqual(ta2.y + ta2.height);
+    await r.cancel.click();
+    await expect(r.btn).toBeVisible();
+  });
+
   test('voice: click toggles the mode, hold records, preview, send with multipart, play back from the pin', async ({ page }) => {
     await stubScreen(page);
     await openForm(page);

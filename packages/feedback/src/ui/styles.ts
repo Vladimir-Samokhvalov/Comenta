@@ -223,6 +223,9 @@ export const STYLES = /* css */ `
   font-family: inherit; font-size: 14px; line-height: 20px;
   resize: none; overflow-y: auto; white-space: pre-wrap;
 }
+.ph-field { position: relative; display: block; }
+.ph-field[data-rec] .ph-textarea { min-height: 84px; padding-right: 44px; padding-bottom: 36px; }
+.ph-field .ph-rec-btn { position: absolute; right: 6px; bottom: 6px; }
 .ph-textarea:focus { outline: none; border-color: var(--ph-accent); box-shadow: 0 0 0 3px rgba(var(--ph-accent-rgb), .18); }
 .ph-textarea::placeholder { color: var(--ph-muted); }
 .ph-error { color: var(--ph-danger); font-size: 13px; line-height: 18px; }

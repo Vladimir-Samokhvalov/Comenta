@@ -128,10 +128,16 @@ export class Popover {
           if (!docked) this.rec?.focusResult(this.textarea);
         },
       );
-      actions.insertBefore(this.rec.button, this.submitBtn);
     }
 
-    this.el.replaceChildren(ta, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
+    // The record button lives inside the text field, in its bottom-right corner.
+    const field = h(d, 'div', { class: 'ph-field' }, [ta]);
+    if (this.rec) {
+      field.setAttribute('data-rec', '');
+      field.append(this.rec.button);
+    }
+
+    this.el.replaceChildren(field, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
     this.el.hidden = false;
     ta.focus({ preventScroll: true });
   }
