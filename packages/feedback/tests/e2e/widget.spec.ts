@@ -485,7 +485,7 @@ test.describe('emoji category', () => {
     await w.toggle.click();
     await page.locator('#inc').click();
     await expect(page.locator('pinhelp-feedback .ph-kinds')).toHaveAttribute('role', 'group');
-    for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Проблема']]) {
+    for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Ошибка']]) {
       await expect(kind(k)).toHaveText(emoji);
       await expect(kind(k)).toHaveAttribute('aria-label', label);
       await expect(kind(k)).toHaveAttribute('title', label);
