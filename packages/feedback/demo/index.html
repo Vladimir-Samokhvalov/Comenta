@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PinHelp — демо виджета комментариев</title>
+  <style>
+    :root { --bg: #f6f7f9; --ink: #1d1f24; --muted: #6b7080; --line: #dfe2e8; --card: #fff; --accent: #0f766e; }
+    body { margin: 0; font: 16px/1.5 Georgia, serif; background: var(--bg); color: var(--ink); }
+    .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #111827; color: #fff; }
+    .topbar a { color: #fff; }
+    .topbar .edge-right { margin-left: auto; }
+    main { max-width: 900px; margin: 0 auto; padding: 24px 16px 120px; }
+    section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+    h1 { font-size: 28px; margin: 8px 0; }
+    h2 { font-size: 20px; margin: 0 0 8px; }
+    .muted { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+    .Button_primary__a1B2c { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid var(--line); padding: 6px 8px; text-align: left; }
+    .tall { height: 1600px; background: repeating-linear-gradient(180deg, #eef2ff 0 40px, #e0e7ff 40px 80px); }
+    .edge-left-btn { position: fixed; left: 0; top: 50%; }
+    .edge-bottom { position: fixed; left: 50%; bottom: 0; transform: translateX(-50%); background: #fde68a; padding: 4px 10px; border-radius: 6px 6px 0 0; }
+    .controls label { margin-right: 16px; }
+    #log { font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; max-height: 200px; overflow: auto; background: #0b1020; color: #b5f5c5; padding: 8px; border-radius: 6px; }
+  </style>
+  <!-- "hostile" page styles, toggled from the controls -->
+  <style id="hostile" media="not all">
+    * { all: unset; }
+    head, script, style, title, meta, link { display: none !important; }
+    div, section, main, header, footer, nav, p, h1, h2, ul, li, table, form { display: block; }
+    button { background: hotpink !important; font-size: 30px !important; padding: 20px !important; border: 5px dashed red !important; color: yellow !important; }
+    textarea, input { border: 3px solid lime !important; font: 40px/1 cursive !important; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a id="top-left-link" href="/somewhere">Лого</a>
+    <nav><a href="https://example.com" class="nav-link">Внешняя ссылка</a></nav>
+    <button class="edge-right" data-testid="top-right-btn" onclick="window.__clicks = (window.__clicks||0)+1">Справа вверху</button>
+  </header>
+  <button class="edge-left-btn" id="edge-left">Край</button>
+  <div class="edge-bottom" id="edge-bottom">Внизу экрана</div>
+
+  <main>
+    <h1>Демо: режим комментариев</h1>
+    <p class="muted">Нажмите «Комментарии» справа внизу, наведите на элемент, кликните и оставьте заметку.</p>
+
+    <section class="controls" data-feedback-ignore>
+      <h2>Настройки демо (не комментируется: data-feedback-ignore)</h2>
+      <label>Адаптер:
+        <select id="adapter">
+          <option value="http">HTTP → мок-сервер</option>
+          <option value="fail">HTTP → недоступный endpoint</option>
+          <option value="console">console + localStorage</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="hostile-toggle" /> Враждебные стили (<code>* { all: unset }</code>, <code>button {}</code>)</label>
+      <div id="log"></div>
+    </section>
+
+    <section id="buttons">
+      <h2>Кнопки и ссылки</h2>
+      <p>Счётчик кликов: <b id="counter">0</b></p>
+      <button id="inc" onclick="document.getElementById('counter').textContent = +document.getElementById('counter').textContent + 1">+1</button>
+      <a href="#anchor" id="anchor-link">Якорная ссылка</a>
+      <a href="/elsewhere" id="nav-away">Ссылка, уводящая со страницы</a>
+      <div class="grid">
+        <div class="card"><h3>Тариф А</h3><button class="Button_primary__a1B2c css-1x2y3z">Выбрать</button></div>
+        <div class="card"><h3>Тариф Б</h3><button class="Button_primary__a1B2c css-1x2y3z">Выбрать</button></div>
+        <div class="card"><h3>Тариф В</h3><button class="Button_primary__a1B2c css-1x2y3z">Выбрать</button></div>
+      </div>
+    </section>
+
+    <section id="form-section">
+      <h2>Форма (значения полей не должны попасть в заявку)</h2>
+      <form id="signup" onsubmit="event.preventDefault(); window.__submitted = (window.__submitted||0)+1;">
+        <p><label>Email <input id="email" name="email" type="email" value="secret@example.com" /></label></p>
+        <p><label>О себе <textarea id="bio" name="bio">TOP-SECRET-BIO</textarea></label></p>
+        <p><label>Город <select id="city" name="city"><option>Москва</option><option selected>SECRET-CITY</option></select></label></p>
+        <div id="editor" contenteditable="true">SECRET-EDITABLE</div>
+        <p class="pii" data-feedback-ignore>Паспорт: SECRET-PASSPORT</p>
+        <button type="submit" id="submit-form">Отправить форму</button>
+      </form>
+    </section>
+
+    <section id="table-section">
+      <h2>Таблица</h2>
+      <table>
+        <thead><tr><th>Имя</th><th>Роль</th><th>Статус</th></tr></thead>
+        <tbody>
+          <tr><td>Анна</td><td>Дизайнер</td><td>Активна</td></tr>
+          <tr><td>Борис</td><td>Разработчик</td><td>В отпуске</td></tr>
+          <tr><td>Вера</td><td>Аналитик</td><td>Активна</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="dynamic">
+      <h2>Динамика (SPA)</h2>
+      <p>
+        <button id="toggle-target">Удалить / вернуть блок</button>
+        <button id="shift-layout">Вставить блок сверху</button>
+        <button id="route-a">Маршрут /app/a</button>
+        <button id="route-b">Маршрут /app/b</button>
+      </p>
+      <div id="shift-zone"></div>
+      <div id="spa-root"><div class="card" data-feedback-id="removable">Этот блок можно удалить и вернуть</div></div>
+      <div id="route-view" class="card">Главная</div>
+    </section>
+
+    <section id="tall-section">
+      <h2>Элемент выше экрана</h2>
+      <div class="tall" id="tall"></div>
+    </section>
+
+    <section id="anchor"><h2>Подвал</h2><p>Конец страницы.</p></section>
+  </main>
+
+  <script type="module">
+    import { initFeedback, httpAdapter, consoleAdapter } from '/dist/index.js';
+
+    const log = (msg) => {
+      const el = document.getElementById('log');
+      el.textContent = `${new Date().toLocaleTimeString()} ${msg}\n` + el.textContent;
+    };
+    const adapters = {
+      http: () => httpAdapter({ endpoint: '/api/feedback' }),
+      fail: () => httpAdapter({ endpoint: '/api/feedback?fail=1' }),
+      console: () => consoleAdapter(),
+    };
+    const select = document.getElementById('adapter');
+    const params = new URLSearchParams(location.search);
+    select.value = params.get('adapter') ?? 'http';
+
+    window.fb = initFeedback({
+      adapter: adapters[select.value](),
+      author: { id: 'demo', name: 'Демо-пользователь' },
+      onSubmit: (p) => { window.__lastPayload = p; log(`отправлено: ${p.kind} → ${p.target.selector}`); },
+      onError: (e) => log(`ошибка: ${e.message}`),
+    });
+    select.addEventListener('change', () => window.fb.update({ adapter: adapters[select.value]() }));
+
+    document.getElementById('hostile-toggle').addEventListener('change', (e) => {
+      document.getElementById('hostile').media = e.target.checked ? 'all' : 'not all';
+    });
+
+    // dynamic DOM
+    const removable = document.querySelector('[data-feedback-id="removable"]');
+    document.getElementById('toggle-target').addEventListener('click', () => {
+      const root = document.getElementById('spa-root');
+      if (removable.isConnected) removable.remove();
+      else root.append(removable.cloneNode(true)); // a *new* node: pin re-binds by selector
+    });
+    document.getElementById('shift-layout').addEventListener('click', () => {
+      const block = document.createElement('div');
+      block.className = 'card';
+      block.style.height = '120px';
+      block.textContent = 'Новый блок сдвинул вёрстку';
+      document.getElementById('shift-zone').prepend(block);
+    });
+    const route = (path, text) => {
+      history.pushState({}, '', path);
+      document.getElementById('route-view').textContent = text;
+    };
+    document.getElementById('route-a').addEventListener('click', () => route('/app/a', 'Страница A'));
+    document.getElementById('route-b').addEventListener('click', () => route('/app/b', 'Страница B'));
+  </script>
+</body>
+</html>

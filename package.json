@@ -1,0 +1,8 @@
+{
+  "name": "pinhelp",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -C packages/feedback build",
+    "test": "pnpm -C packages/feedback test"
+  }
+}

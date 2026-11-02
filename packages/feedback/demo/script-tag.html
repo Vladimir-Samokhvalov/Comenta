@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PinHelp — подключение через script</title>
+  <style>body { font: 16px/1.5 system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }</style>
+</head>
+<body>
+  <h1>Подключение одним тегом</h1>
+  <p id="intro">Виджет инициализирован атрибутами <code>data-*</code> на теге script.</p>
+  <button id="btn" onclick="alert('clicked')">Кнопка</button>
+
+  <script
+    src="/dist/feedback.iife.js"
+    data-endpoint="/api/feedback"
+    data-position="bottom-left"
+    data-author-name="Гость"
+  ></script>
+</body>
+</html>

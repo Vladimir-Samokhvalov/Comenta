@@ -1,0 +1,205 @@
+import type { FeedbackKind, FeedbackLabels, FeedbackPayload } from '../types';
+import { placePopover } from '../core/position';
+import { h } from './h';
+import type { Rect } from './view';
+
+const KINDS: FeedbackKind[] = ['question', 'suggestion', 'bug'];
+const FOCUSABLE = 'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+let seq = 0;
+
+export interface PopoverHandlers {
+  onSubmit: (kind: FeedbackKind, text: string) => void;
+  onCancel: () => void;
+}
+
+export type PopoverMode = 'compose' | 'view';
+
+/** The popover dialog: compose form or read-only view of a sent comment. */
+export class Popover {
+  readonly el: HTMLDivElement;
+  mode: PopoverMode | null = null;
+  /** id of the comment shown in view mode */
+  viewing: string | null = null;
+  private textarea: HTMLTextAreaElement | null = null;
+  private submitBtn: HTMLButtonElement | null = null;
+  private cancelBtn: HTMLButtonElement | null = null;
+  private errorEl: HTMLDivElement | null = null;
+  private kind: FeedbackKind = 'suggestion';
+  private submitting = false;
+  private readonly name = `ph-kind-${++seq}`;
+
+  constructor(
+    private readonly doc: Document,
+    parent: HTMLElement,
+    private readonly labels: FeedbackLabels,
+    private readonly handlers: PopoverHandlers,
+  ) {
+    this.el = h(doc, 'div', { class: 'ph-popover', role: 'dialog', 'aria-label': labels.dialog, hidden: true });
+    this.el.addEventListener('keydown', this.onKeyDown);
+    // Keep typing inside the widget from reaching page-level (bubble) shortcuts.
+    for (const t of ['keydown', 'keyup', 'keypress']) this.el.addEventListener(t, (e) => e.stopPropagation());
+    parent.append(this.el);
+  }
+
+  get isOpen() {
+    return this.mode !== null;
+  }
+
+  openCompose() {
+    if (this.mode === 'compose') {
+      this.textarea?.focus();
+      return;
+    }
+    const d = this.doc;
+    this.mode = 'compose';
+    this.viewing = null;
+    this.submitting = false;
+    this.kind = 'suggestion';
+
+    const kinds = h(d, 'div', { class: 'ph-kinds', role: 'radiogroup', 'aria-label': this.labels.kindGroup });
+    for (const k of KINDS) {
+      const input = h(d, 'input', { type: 'radio', name: this.name, value: k, 'aria-label': this.labels.kinds[k] });
+      input.checked = k === this.kind;
+      input.addEventListener('change', () => {
+        if (input.checked) this.kind = k;
+      });
+      kinds.append(h(d, 'label', { class: 'ph-kind', 'data-kind': k }, [input, h(d, 'span', {}, [this.labels.kinds[k]])]));
+    }
+
+    const ta = h(d, 'textarea', { class: 'ph-textarea', rows: 3, 'aria-label': this.labels.textarea, placeholder: this.labels.placeholder });
+    ta.addEventListener('input', () => {
+      this.autoGrow();
+      this.syncSubmit();
+    });
+    this.textarea = ta;
+
+    this.errorEl = h(d, 'div', { class: 'ph-error', role: 'alert', hidden: true });
+
+    const isMac = /Mac|iPhone|iPad/.test(d.defaultView?.navigator.platform ?? '');
+    this.cancelBtn = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.cancel }, [this.labels.cancel]);
+    this.cancelBtn.addEventListener('click', () => this.handlers.onCancel());
+    this.submitBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary', 'aria-label': this.labels.submit, disabled: true }, [
+      this.labels.submit,
+    ]);
+    this.submitBtn.addEventListener('click', () => this.trySubmit());
+
+    const actions = h(d, 'div', { class: 'ph-actions' }, [
+      h(d, 'span', { class: 'ph-hint', 'aria-hidden': 'true' }, [isMac ? '⌘↵' : 'Ctrl+↵']),
+      this.cancelBtn,
+      this.submitBtn,
+    ]);
+
+    this.el.replaceChildren(kinds, ta, this.errorEl, actions);
+    this.el.hidden = false;
+    ta.focus({ preventScroll: true });
+  }
+
+  openView(payload: FeedbackPayload, n: number) {
+    const d = this.doc;
+    this.mode = 'view';
+    this.viewing = payload.id;
+    this.textarea = this.submitBtn = this.cancelBtn = null;
+    this.errorEl = null;
+    const close = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.close }, [this.labels.close]);
+    close.addEventListener('click', () => this.handlers.onCancel());
+    let when = '';
+    try {
+      when = new Date(payload.createdAt).toLocaleString();
+    } catch {
+      /* ignore */
+    }
+    const text = h(d, 'div', { class: 'ph-view-text', tabindex: 0 }, [payload.text]);
+    this.el.replaceChildren(
+      h(d, 'div', { class: 'ph-view-head' }, [
+        h(d, 'span', { class: 'ph-badge' }, [`#${n} · ${this.labels.kinds[payload.kind] ?? payload.kind}`]),
+        h(d, 'span', { class: 'ph-meta' }, [when]),
+      ]),
+      text,
+      h(d, 'div', { class: 'ph-actions' }, [close]),
+    );
+    this.el.hidden = false;
+    close.focus({ preventScroll: true });
+  }
+
+  close() {
+    this.mode = null;
+    this.viewing = null;
+    this.textarea = this.submitBtn = this.cancelBtn = null;
+    this.errorEl = null;
+    this.el.hidden = true;
+    this.el.replaceChildren();
+  }
+
+  setSubmitting(on: boolean) {
+    this.submitting = on;
+    if (!this.submitBtn || !this.textarea) return;
+    this.submitBtn.textContent = on ? this.labels.submitting : this.labels.submit;
+    this.textarea.readOnly = on;
+    this.el.setAttribute('aria-busy', String(on));
+    this.syncSubmit();
+  }
+
+  setError(message: string | null) {
+    if (!this.errorEl) return;
+    this.errorEl.textContent = message ?? '';
+    this.errorEl.hidden = !message;
+    if (message) this.textarea?.focus({ preventScroll: true });
+  }
+
+  focus() {
+    (this.textarea ?? this.focusables()[0])?.focus({ preventScroll: true });
+  }
+
+  position(anchor: Rect, viewport: { width: number; height: number }) {
+    const w = this.el.offsetWidth || 320;
+    const hgt = this.el.offsetHeight || 180;
+    const p = placePopover(anchor, { width: w, height: hgt }, viewport);
+    this.el.style.transform = `translate(${p.left}px, ${p.top}px)`;
+    this.el.setAttribute('data-side', p.side);
+  }
+
+  focusables(): HTMLElement[] {
+    return Array.from(this.el.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => {
+      // radio group: only the checked radio is in the tab sequence
+      return !(el instanceof HTMLInputElement && el.type === 'radio' && !el.checked);
+    });
+  }
+
+  private trySubmit() {
+    if (this.submitting || !this.textarea) return;
+    const text = this.textarea.value.trim();
+    if (!text) return;
+    this.setError(null);
+    this.handlers.onSubmit(this.kind, text);
+  }
+
+  private syncSubmit() {
+    if (!this.submitBtn || !this.textarea) return;
+    this.submitBtn.disabled = this.submitting || this.textarea.value.trim() === '';
+  }
+
+  private autoGrow() {
+    const ta = this.textarea;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight + 2, 240)}px`;
+  }
+
+  private onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && this.mode === 'compose') {
+      e.preventDefault();
+      this.trySubmit();
+      return;
+    }
+    if (e.key === 'Tab') {
+      // focus trap
+      const items = this.focusables();
+      if (!items.length) return;
+      const active = (this.el.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
+      const idx = active ? items.indexOf(active) : -1;
+      const next = e.shiftKey ? (idx <= 0 ? items.length - 1 : idx - 1) : idx === items.length - 1 ? 0 : idx + 1;
+      e.preventDefault();
+      items[next].focus();
+    }
+  };
+}
