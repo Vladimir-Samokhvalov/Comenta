@@ -16,6 +16,9 @@ import { View, type Rect } from '../ui/view';
 import { h } from '../ui/h';
 import { normalizeUrl } from './url';
 import { uuid } from './uuid';
+import { extensionFor, recordingSupport, type Recording } from './recorder';
+import type { RecordConfig } from '../ui/record';
+import type { FeedbackAttachment, FeedbackFile } from '../types';
 
 interface StoredComment {
   payload: FeedbackPayload;
@@ -44,6 +47,8 @@ export class Controller {
   private menu: Menu | null = null;
   private panel: Panel | null = null;
   private pinsHidden = false;
+  /** blob: URLs created for in-session playback of sent recordings; revoked on destroy. */
+  private objectUrls: string[] = [];
   private active = false;
   private destroyed = false;
   private hoverEl: Element | null = null;
@@ -113,10 +118,17 @@ export class Controller {
       onClose: () => this.closePanel(true),
     });
     this.view.more.addEventListener('click', () => (this.menu?.isOpen ? this.closeMenu(true) : this.openMenu()));
-    this.popover = new Popover(this.doc, this.view.root, this.labels, {
-      onSubmit: (kind, text) => void this.submit(kind, text),
-      onCancel: () => this.closePopover(true),
-    });
+    this.popover = new Popover(
+      this.doc,
+      this.view.root,
+      this.labels,
+      {
+        onSubmit: (kind, text, recording) => void this.submit(kind, text, recording),
+        onCancel: () => this.closePopover(true),
+      },
+      this.recordConfig(),
+    );
+    this.popover.reposition = () => this.scheduleLayout();
 
     const relayout = () => this.scheduleLayout();
     this.globalOffs.push(
@@ -143,6 +155,16 @@ export class Controller {
     void this.loadComments();
   }
 
+  private recordConfig(): RecordConfig | null {
+    const opt = this.options.recording;
+    if (opt === false) return null;
+    const support = recordingSupport(this.win);
+    const audio = support.audio && opt?.audio !== false;
+    const screen = support.screen && opt?.screen !== false;
+    if (!audio && !screen) return null;
+    return { audio, screen, maxMs: opt?.maxDurationMs ?? 60_000 };
+  }
+
   /** Mutations caused by the widget itself (host node, cursor style) are ignored. */
   private isOwnMutation(r: MutationRecord): boolean {
     const style = this.cursorStyle;
@@ -163,6 +185,7 @@ export class Controller {
     if (this.raf) this.win.cancelAnimationFrame(this.raf);
     clearTimeout(this.mutationTimer);
     this.view?.destroy();
+    for (const u of this.objectUrls.splice(0)) URL.revokeObjectURL(u);
     this.view = null;
     this.popover = null;
     this.menu = null;
@@ -290,6 +313,8 @@ export class Controller {
     } else if (this.panel?.isOpen) {
       consume();
       this.closePanel(true);
+    } else if (this.popover?.cancelRecording()) {
+      consume();
     } else if (this.popover?.isOpen) {
       e.preventDefault();
       e.stopPropagation();
@@ -443,7 +468,7 @@ export class Controller {
 
   // ---------------------------------------------------------------- submit
 
-  private buildPayload(kind: FeedbackKind, text: string): FeedbackPayload | null {
+  private buildPayload(kind: FeedbackKind, text: string, files: FeedbackFile[]): FeedbackPayload | null {
     const el = this.selectedEl;
     const target = el && el.isConnected ? describeTarget(el, this.ignoreSelector) : this.selectedSnapshot;
     if (!target) return null;
@@ -463,18 +488,50 @@ export class Controller {
     };
     const author = this.options.author;
     if (author && (author.id || author.name)) payload.author = { ...author };
+    if (files.length) payload.attachments = files.map((f) => ({ ...f.attachment }));
     return payload;
   }
 
-  private async submit(kind: FeedbackKind, text: string) {
+  private toFiles(recording: Recording | null): FeedbackFile[] {
+    if (!recording) return [];
+    const id = uuid();
+    const attachment: FeedbackAttachment = {
+      id,
+      kind: recording.kind,
+      name: `${recording.kind === 'audio' ? 'voice' : 'screen'}-${id}.${extensionFor(recording.mimeType)}`,
+      mimeType: recording.mimeType,
+      size: recording.blob.size,
+      durationMs: Math.round(recording.durationMs),
+    };
+    return [{ attachment, blob: recording.blob }];
+  }
+
+  private async submit(kind: FeedbackKind, text: string, recording: Recording | null = null) {
     const popover = this.popover;
     if (!popover || !this.view) return;
-    const payload = this.buildPayload(kind, text);
+    const files = this.toFiles(recording);
+    const payload = this.buildPayload(kind, text, files);
     if (!payload) return;
     const el = this.selectedEl;
     popover.setSubmitting(true);
+    let stored = payload;
     try {
-      await this.adapter.submit(payload);
+      const result = await this.adapter.submit(payload, files);
+      if (files.length) {
+        // where to play the recordings back: the adapter's URL, or a session-only blob: URL
+        const urls = (result && result.attachmentUrls) || {};
+        stored = {
+          ...payload,
+          attachments: files.map((f) => {
+            let url = urls[f.attachment.id];
+            if (!url) {
+              url = URL.createObjectURL(f.blob);
+              this.objectUrls.push(url);
+            }
+            return { ...f.attachment, url };
+          }),
+        };
+      }
     } catch (err) {
       if (this.destroyed || this.popover !== popover) return;
       popover.setSubmitting(false);
@@ -485,10 +542,10 @@ export class Controller {
     }
     if (this.destroyed) return;
     popover.setSubmitting(false);
-    this.addComment(payload, el);
+    this.addComment(stored, el);
     this.closePopover(true);
     this.view.showToast(this.labels.sent);
-    this.options.onSubmit?.(payload);
+    this.options.onSubmit?.(stored);
   }
 
   // ---------------------------------------------------------------- comments & pins
@@ -543,7 +600,7 @@ export class Controller {
       }
       c.pin.textContent = String(n);
       c.pin.setAttribute('aria-label', this.labels.pin(n));
-      c.pin.title = c.payload.text.length > 80 ? `${c.payload.text.slice(0, 79)}…` : c.payload.text;
+      c.pin.title = c.payload.text.length > 80 ? `${c.payload.text.slice(0, 79)}…` : c.payload.text || (c.payload.attachments?.length ? this.labels.recVoice : '');
     }
   }
 

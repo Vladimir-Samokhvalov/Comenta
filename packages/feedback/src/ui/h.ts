@@ -62,3 +62,11 @@ export const eyeOffIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M8 2.5a5.5 
 export const eyeIcon = (doc: Document) =>
   icon(doc, '0 0 16 16', 'M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z', '1.5');
 export const closeIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M4 4l8 8M12 4l-8 8', '1.5');
+
+export const micIcon = (doc: Document) =>
+  icon(doc, '0 0 20 20', 'M10 2.5a2.5 2.5 0 0 0-2.5 2.5v5a2.5 2.5 0 0 0 5 0V5A2.5 2.5 0 0 0 10 2.5zM5 9.5a5 5 0 0 0 10 0M10 14.5v3', '1.6');
+export const screenIcon = (doc: Document) =>
+  icon(doc, '0 0 20 20', 'M3 4.5h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM7 17.5h6M10 14.5v3', '1.6');
+export const stopIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M4.5 4.5h7v7h-7z', '1.8');
+export const redoIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M3 8a5 5 0 1 0 1.5-3.6M3 2.5v3h3', '1.5');
+export const trashIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M2.5 4.5h11M6.5 4.5V3h3v1.5M4 4.5l.6 8.5h6.8l.6-8.5', '1.5');

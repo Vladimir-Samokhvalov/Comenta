@@ -1,14 +1,17 @@
 import type { FeedbackKind, FeedbackLabels, FeedbackPayload } from '../types';
 import { placePopover } from '../core/position';
 import { h } from './h';
+import { attachmentsView, RecordControl, type RecordConfig } from './record';
+import type { Recording } from '../core/recorder';
 import type { Rect } from './view';
 
 const KINDS: FeedbackKind[] = ['question', 'suggestion', 'bug'];
-const FOCUSABLE = 'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE =
+  'button:not([disabled]):not([hidden]), textarea:not([disabled]), input:not([disabled]), audio[controls], video[controls], [tabindex]:not([tabindex="-1"])';
 let seq = 0;
 
 export interface PopoverHandlers {
-  onSubmit: (kind: FeedbackKind, text: string) => void;
+  onSubmit: (kind: FeedbackKind, text: string, recording: Recording | null) => void;
   onCancel: () => void;
 }
 
@@ -26,6 +29,7 @@ export class Popover {
   private errorEl: HTMLDivElement | null = null;
   private kind: FeedbackKind = 'suggestion';
   private submitting = false;
+  private rec: RecordControl | null = null;
   private readonly name = `ph-kind-${++seq}`;
 
   constructor(
@@ -33,6 +37,7 @@ export class Popover {
     parent: HTMLElement,
     private readonly labels: FeedbackLabels,
     private readonly handlers: PopoverHandlers,
+    private readonly record: RecordConfig | null = null,
   ) {
     this.el = h(doc, 'div', { class: 'ph-popover', role: 'dialog', 'aria-label': labels.dialog, hidden: true });
     this.el.addEventListener('keydown', this.onKeyDown);
@@ -89,7 +94,21 @@ export class Popover {
       this.submitBtn,
     ]);
 
-    this.el.replaceChildren(kinds, ta, this.errorEl, actions);
+    if (this.record) {
+      this.rec = new RecordControl(
+        d,
+        this.record,
+        this.labels,
+        () => {
+          this.syncSubmit();
+          this.reposition?.();
+        },
+        (msg) => this.setError(msg),
+      );
+      actions.insertBefore(this.rec.button, this.submitBtn);
+    }
+
+    this.el.replaceChildren(kinds, ta, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
     this.el.hidden = false;
     ta.focus({ preventScroll: true });
   }
@@ -108,20 +127,32 @@ export class Popover {
     } catch {
       /* ignore */
     }
-    const text = h(d, 'div', { class: 'ph-view-text', tabindex: 0 }, [payload.text]);
+    const text = payload.text ? h(d, 'div', { class: 'ph-view-text', tabindex: 0 }, [payload.text]) : null;
+    const media = payload.attachments?.length ? attachmentsView(d, payload.attachments, this.labels) : null;
     this.el.replaceChildren(
       h(d, 'div', { class: 'ph-view-head' }, [
         h(d, 'span', { class: 'ph-badge' }, [`#${n} · ${this.labels.kinds[payload.kind] ?? payload.kind}`]),
         h(d, 'span', { class: 'ph-meta' }, [when]),
       ]),
-      text,
+      ...(text ? [text] : []),
+      ...(media ? [media] : []),
       h(d, 'div', { class: 'ph-actions' }, [close]),
     );
     this.el.hidden = false;
     close.focus({ preventScroll: true });
   }
 
+  /** Cancel an in-progress recording; true if there was one (Esc handling). */
+  cancelRecording(): boolean {
+    return this.rec?.cancel() ?? false;
+  }
+
+  /** Set by the controller: re-run positioning when the popover changes size. */
+  reposition: (() => void) | null = null;
+
   close() {
+    this.rec?.dispose();
+    this.rec = null;
     this.mode = null;
     this.viewing = null;
     this.textarea = this.submitBtn = this.cancelBtn = null;
@@ -168,14 +199,16 @@ export class Popover {
   private trySubmit() {
     if (this.submitting || !this.textarea) return;
     const text = this.textarea.value.trim();
-    if (!text) return;
+    const recording = this.rec?.result ?? null;
+    if ((!text && !recording) || this.rec?.recording) return;
     this.setError(null);
-    this.handlers.onSubmit(this.kind, text);
+    this.handlers.onSubmit(this.kind, text, recording);
   }
 
   private syncSubmit() {
     if (!this.submitBtn || !this.textarea) return;
-    this.submitBtn.disabled = this.submitting || this.textarea.value.trim() === '';
+    this.submitBtn.disabled =
+      this.submitting || !!this.rec?.recording || (this.textarea.value.trim() === '' && !this.rec?.result);
   }
 
   private autoGrow() {

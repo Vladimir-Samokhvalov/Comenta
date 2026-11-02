@@ -32,6 +32,39 @@ export interface FeedbackPayload {
     attributes: Record<string, string>;
   };
   author?: FeedbackAuthor;
+  /** Voice or screen recordings. Files travel next to the payload (see `FeedbackAdapter.submit`). */
+  attachments?: FeedbackAttachment[];
+}
+
+export type FeedbackAttachmentKind = 'audio' | 'screen';
+
+export interface FeedbackAttachment {
+  id: string;
+  /** `audio` — voice message; `screen` — screen recording with microphone audio. */
+  kind: FeedbackAttachmentKind;
+  /** File name, e.g. `voice-<id>.webm`. */
+  name: string;
+  mimeType: string;
+  /** Bytes. */
+  size: number;
+  durationMs: number;
+  /**
+   * Where the recording can be played back: a server URL (set from the adapter's result),
+   * a `data:` URL (consoleAdapter) or absent if it was not stored.
+   */
+  url?: string;
+}
+
+/** A recorded file handed to the adapter together with its metadata from `payload.attachments`. */
+export interface FeedbackFile {
+  attachment: FeedbackAttachment;
+  blob: Blob;
+}
+
+/** Optional result of `submit`: lets the backend tell the widget where files are stored. */
+export interface FeedbackSubmitResult {
+  /** attachment id → playback URL */
+  attachmentUrls?: Record<string, string>;
 }
 
 export interface FeedbackAuthor {
@@ -44,7 +77,11 @@ export interface FeedbackAuthor {
  * an issue tracker (YouTrack, GitLab, ...) or anywhere else.
  */
 export interface FeedbackAdapter {
-  submit(payload: FeedbackPayload): Promise<void>;
+  /**
+   * Send the payload. `files` holds the recordings described in `payload.attachments`
+   * (empty when there are none). Reject to show an error in the form.
+   */
+  submit(payload: FeedbackPayload, files?: FeedbackFile[]): Promise<void | FeedbackSubmitResult>;
   /** Optional: return previously stored feedback for a page so pins can be restored. */
   list?(pageUrl: string): Promise<FeedbackPayload[]>;
   /** Optional: all feedback of the current user across pages (the "All" tab of the comments panel). */
@@ -80,6 +117,20 @@ export interface FeedbackLabels {
   tabAll: string;
   empty: string;
   notFound: string;
+  recVoice: string;
+  recScreen: string;
+  recHint: string;
+  recStop: string;
+  recCancel: string;
+  recRedo: string;
+  recDelete: string;
+  recVoiceLabel: string;
+  recScreenLabel: string;
+  recNoMic: string;
+  recDenied: string;
+  recFailed: string;
+  recMissing: string;
+  recLimit: string;
 }
 
 export interface FeedbackOptions {
@@ -95,6 +146,11 @@ export interface FeedbackOptions {
    * and their content never ends up in a payload. Default `[data-feedback-ignore]`.
    */
   ignoreSelector?: string;
+  /**
+   * Voice / screen recording in the comment form. Default: enabled where the browser supports it.
+   * `false` hides the record button.
+   */
+  recording?: false | { audio?: boolean; screen?: boolean; maxDurationMs?: number };
   /** Keyboard shortcut that toggles comment mode (ignored while typing). `false` disables it. Default `'c'`. */
   hotkey?: string | false;
   /** Base z-index for the widget layer. Default 2147483000. */
