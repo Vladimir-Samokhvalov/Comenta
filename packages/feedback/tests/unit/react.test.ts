@@ -19,7 +19,7 @@ describe('<FeedbackWidget />', () => {
     });
     expect(document.querySelectorAll('pinhelp-feedback').length).toBe(1);
     const host = document.querySelector('pinhelp-feedback')!;
-    expect(host.shadowRoot!.querySelector('.ph-toggle')!.classList.contains('ph-pos-top-left')).toBe(true);
+    expect(host.shadowRoot!.querySelector('.ph-bar')!.classList.contains('ph-pos-top-left')).toBe(true);
     expect(container.childNodes.length).toBe(0);
 
     ref.current!.open();
@@ -28,7 +28,7 @@ describe('<FeedbackWidget />', () => {
     await act(async () => {
       root.render(createElement(FeedbackWidget, { adapter, position: 'bottom-left', ref }));
     });
-    const toggle = document.querySelector('pinhelp-feedback')!.shadowRoot!.querySelector('.ph-toggle')!;
+    const toggle = document.querySelector('pinhelp-feedback')!.shadowRoot!.querySelector('.ph-bar')!;
     expect(toggle.classList.contains('ph-pos-bottom-left')).toBe(true);
 
     await act(async () => root.unmount());

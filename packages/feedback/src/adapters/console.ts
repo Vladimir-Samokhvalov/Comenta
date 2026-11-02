@@ -53,5 +53,8 @@ export function consoleAdapter(options: ConsoleAdapterOptions = {}): FeedbackAda
       const url = normalizeUrl(pageUrl);
       return read().filter((p) => normalizeUrl(p.page.url) === url);
     },
+    async listAll() {
+      return read();
+    },
   };
 }

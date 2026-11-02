@@ -2,7 +2,11 @@ import { expect, type Page, type Request } from '@playwright/test';
 
 export const widget = (page: Page) => ({
   toggle: page.locator('pinhelp-feedback .ph-toggle'),
-  count: page.locator('pinhelp-feedback .ph-count'),
+  bar: page.locator('pinhelp-feedback .ph-bar'),
+  more: page.locator('pinhelp-feedback .ph-more'),
+  menu: page.locator('pinhelp-feedback .ph-menu'),
+  panel: page.locator('pinhelp-feedback .ph-panel'),
+  items: page.locator('pinhelp-feedback .ph-item'),
   hoverBox: page.locator('pinhelp-feedback .ph-box:not(.ph-selected)'),
   selBox: page.locator('pinhelp-feedback .ph-box.ph-selected'),
   popover: page.locator('pinhelp-feedback .ph-popover'),
@@ -34,4 +38,15 @@ export async function comment(page: Page, selector: string, text: string) {
 
 export async function viewportBox(page: Page) {
   return page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+}
+
+/** Number of comments on the current page, as shown in the chevron menu. */
+export async function menuCount(page: Page): Promise<string> {
+  const w = widget(page);
+  await w.more.click();
+  await expect(w.menu).toBeVisible();
+  const n = (await page.locator('pinhelp-feedback .ph-mi-all .ph-mi-extra').textContent()) ?? '';
+  await page.keyboard.press('Escape');
+  await expect(w.menu).toBeHidden();
+  return n;
 }

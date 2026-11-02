@@ -24,6 +24,7 @@ export const FeedbackWidget = forwardRef<FeedbackInstance | null, FeedbackWidget
       isOpen: () => instance.current?.isOpen() ?? false,
       update: (o) => instance.current?.update(o),
       getComments: () => instance.current?.getComments() ?? [],
+      showComments: () => instance.current?.showComments(),
       destroy: () => instance.current?.destroy(),
     }),
     [],

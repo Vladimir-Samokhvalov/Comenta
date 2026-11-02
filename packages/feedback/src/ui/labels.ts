@@ -9,7 +9,7 @@ function plural(n: number, one: string, few: string, many: string): string {
 }
 
 export const DEFAULT_LABELS: FeedbackLabels = {
-  toggle: 'Комментарии',
+  toggle: 'Комментировать',
   toggleActive: 'Выйти из режима комментариев',
   count: (n) => `${n} ${plural(n, 'комментарий', 'комментария', 'комментариев')} на странице`,
   kinds: { question: 'Вопрос', suggestion: 'Предложение', bug: 'Ошибка' },
@@ -24,4 +24,14 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   errorPrefix: 'Не удалось отправить',
   dialog: 'Комментарий к элементу',
   pin: (n) => `Комментарий ${n}`,
+  locale: 'ru',
+  menu: 'Меню комментариев',
+  showAll: 'Показать все комментарии',
+  hidePins: 'Скрыть пины',
+  showPins: 'Показать пины',
+  panelTitle: 'Мои комментарии',
+  tabPage: 'Эта страница',
+  tabAll: 'Все',
+  empty: 'Комментариев пока нет',
+  notFound: 'элемент не найден',
 };

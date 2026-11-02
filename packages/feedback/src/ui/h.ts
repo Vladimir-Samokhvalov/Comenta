@@ -31,8 +31,34 @@ export function commentIcon(doc: Document): SVGSVGElement {
   svg.setAttribute('stroke-linecap', 'round');
   svg.setAttribute('stroke-linejoin', 'round');
   svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('stroke-width', '1.8');
   const path = doc.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z');
+  path.setAttribute('d', 'M12 3.5a8.5 8.5 0 0 0-7.4 12.7L3.5 20.5l4.3-1.1A8.5 8.5 0 1 0 12 3.5z');
   svg.append(path);
   return svg;
 }
+
+function icon(doc: Document, viewBox: string, d: string, width = '1.6'): SVGSVGElement {
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  for (const [k, v] of Object.entries({
+    viewBox,
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': width,
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+    'aria-hidden': 'true',
+  }))
+    svg.setAttribute(k, v);
+  const path = doc.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', d);
+  svg.append(path);
+  return svg;
+}
+
+export const chevronIcon = (doc: Document) => icon(doc, '0 0 12 12', 'M3 4.5 6 7.5 9 4.5');
+export const listIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M2.5 4h11M2.5 8h11M2.5 12h7', '1.5');
+export const eyeOffIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM4.1 11.9l7.8-7.8', '1.5');
+export const eyeIcon = (doc: Document) =>
+  icon(doc, '0 0 16 16', 'M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z', '1.5');
+export const closeIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M4 4l8 8M12 4l-8 8', '1.5');

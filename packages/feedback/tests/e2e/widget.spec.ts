@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { comment, openDemo, viewportBox, widget } from './helpers';
+import { comment, menuCount, openDemo, viewportBox, widget } from './helpers';
 
 test.describe('comment mode', () => {
   test('happy path: enable → select → write → send → pin', async ({ page }) => {
@@ -46,7 +46,7 @@ test.describe('comment mode', () => {
     await expect(w.pins).toHaveCount(1);
     await expect(w.pins.first()).toBeVisible();
     await expect(w.pins.first()).toHaveText('1');
-    await expect(w.count).toHaveText('1');
+    expect(await menuCount(page)).toBe('1');
 
     // pin opens read-only view
     await w.pins.first().click();
@@ -270,7 +270,7 @@ test.describe('pins', () => {
 
     await page.locator('#toggle-target').click(); // remove
     await expect(w.pins.first()).toBeHidden();
-    await expect(w.count).toHaveText('1'); // comment is not lost
+    expect(await menuCount(page)).toBe('1'); // comment is not lost
 
     await page.locator('#toggle-target').click(); // re-add (new node)
     await expect(w.pins.first()).toBeVisible();
@@ -287,7 +287,7 @@ test.describe('pins', () => {
     await expect(w.pins.first()).toBeVisible();
     await page.locator('#route-b').click();
     await expect(w.pins).toHaveCount(0);
-    await expect(w.count).toBeHidden();
+    expect(await menuCount(page)).toBe('0');
     await page.goBack();
     await expect(w.pins).toHaveCount(1);
   });
@@ -338,9 +338,10 @@ test.describe('lifecycle & isolation', () => {
     await expect(w.toggle).toBeVisible();
     const t = await w.toggle.evaluate((el) => {
       const s = getComputedStyle(el);
-      return { h: s.height, bg: s.backgroundColor, font: s.fontSize, pos: s.position, border: s.borderStyle };
+      const bar = getComputedStyle(el.parentElement!);
+      return { w: s.width, h: s.height, border: s.borderStyle, bg: bar.backgroundColor, pos: bar.position, barBorder: bar.borderStyle, radius: bar.borderRadius };
     });
-    expect(t).toEqual({ h: '40px', bg: 'rgb(255, 255, 255)', font: '14px', pos: 'fixed', border: 'solid' });
+    expect(t).toEqual({ w: '36px', h: '36px', border: 'none', bg: 'rgb(255, 255, 255)', pos: 'fixed', barBorder: 'solid', radius: '12px' });
     await w.toggle.click();
     await page.locator('#inc').click();
     await expect(w.popover).toBeVisible();
@@ -354,12 +355,100 @@ test.describe('lifecycle & isolation', () => {
     await page.goto('/demo/script-tag.html');
     const w = widget(page);
     await expect(w.toggle).toBeVisible();
-    await expect(w.toggle).toHaveClass(/ph-pos-bottom-left/);
+    await expect(w.bar).toHaveClass(/ph-pos-bottom-left/);
     page.on('dialog', () => {
       throw new Error('click was not blocked');
     });
     const payload = await comment(page, '#btn', 'через script');
     expect(payload.author).toEqual({ name: 'Гость' });
     expect(payload.target.selector).toBe('#btn');
+  });
+});
+
+test.describe('toolbar menu & comments panel', () => {
+  test('chevron menu: show all comments, jump to a comment, hide pins', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await comment(page, '#inc', 'Первый');
+    await comment(page, '#anchor p', 'Второй, внизу страницы');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => scrollTo(0, 0));
+
+    await w.more.click();
+    await expect(w.more).toHaveAttribute('aria-expanded', 'true');
+    await expect(w.menu).toBeVisible();
+    await expect(page.locator('pinhelp-feedback .ph-mi-all')).toContainText('Показать все комментарии');
+    await expect(page.locator('pinhelp-feedback .ph-mi-all .ph-mi-extra')).toHaveText('2');
+    await expect(page.locator('pinhelp-feedback .ph-mi-all')).toBeFocused();
+
+    await page.locator('pinhelp-feedback .ph-mi-all').click();
+    await expect(w.menu).toBeHidden();
+    await expect(w.panel).toBeVisible();
+    await expect(w.items).toHaveCount(2);
+    await expect(w.items.nth(1)).toContainText('Второй, внизу страницы');
+
+    // jump to the comment below the fold
+    await w.items.nth(1).click();
+    await expect(w.panel).toBeHidden();
+    await expect(page.locator('#anchor p')).toBeInViewport();
+    await expect(w.popover).toContainText('Второй, внизу страницы');
+    await page.keyboard.press('Escape');
+
+    // hide / show pins
+    await w.more.click();
+    await page.locator('pinhelp-feedback .ph-mi-pins').click();
+    await expect(w.pins.first()).toBeHidden();
+    await w.more.click();
+    await expect(page.locator('pinhelp-feedback .ph-mi-pins')).toContainText('Показать пины');
+    await page.locator('pinhelp-feedback .ph-mi-pins').click();
+    await expect(w.pins.last()).toBeVisible();
+  });
+
+  test('panel marks missing elements and lists other pages under "All"', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await comment(page, '[data-feedback-id="removable"]', 'На блоке');
+    await page.keyboard.press('Escape');
+    await page.locator('#toggle-target').click(); // remove the element
+    await page.locator('#route-a').click();
+    await comment(page, '#route-view', 'Со страницы A');
+    await page.keyboard.press('Escape');
+    await page.goBack();
+
+    await page.evaluate(() => (window as any).fb.showComments());
+    await expect(w.panel).toBeVisible();
+    await expect(w.items).toHaveCount(1);
+    await expect(w.items.first()).toHaveClass(/ph-item-missing/);
+    await expect(w.items.first()).toContainText('элемент не найден');
+
+    await page.locator('pinhelp-feedback .ph-tab[data-tab="all"]').click();
+    await expect(w.items).toHaveCount(2);
+    await expect(w.items.first()).toContainText('/app/a');
+
+    // outside click closes the panel
+    await page.locator('main h1').click();
+    await expect(w.panel).toBeHidden();
+  });
+
+  test('hotkey C toggles comment mode, but not while typing', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await page.locator('main h1').click();
+    await page.keyboard.press('c');
+    await expect(w.toggle).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('c');
+    await expect(w.toggle).toHaveAttribute('aria-pressed', 'false');
+    await page.locator('#email').fill('');
+    await page.locator('#email').press('c');
+    await expect(w.toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#email')).toHaveValue('c');
+  });
+
+  test('tooltip on hover', async ({ page }) => {
+    await openDemo(page);
+    const w = widget(page);
+    await w.toggle.hover();
+    await expect(page.locator('pinhelp-feedback .ph-tip')).toHaveCSS('opacity', '1');
+    await expect(page.locator('pinhelp-feedback .ph-tip')).toContainText('Комментировать');
   });
 });

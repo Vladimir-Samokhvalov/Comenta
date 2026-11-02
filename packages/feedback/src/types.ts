@@ -47,6 +47,8 @@ export interface FeedbackAdapter {
   submit(payload: FeedbackPayload): Promise<void>;
   /** Optional: return previously stored feedback for a page so pins can be restored. */
   list?(pageUrl: string): Promise<FeedbackPayload[]>;
+  /** Optional: all feedback of the current user across pages (the "All" tab of the comments panel). */
+  listAll?(): Promise<FeedbackPayload[]>;
 }
 
 export type FeedbackPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
@@ -67,6 +69,17 @@ export interface FeedbackLabels {
   errorPrefix: string;
   dialog: string;
   pin: (n: number) => string;
+  /** BCP 47 locale for relative dates. */
+  locale: string;
+  menu: string;
+  showAll: string;
+  hidePins: string;
+  showPins: string;
+  panelTitle: string;
+  tabPage: string;
+  tabAll: string;
+  empty: string;
+  notFound: string;
 }
 
 export interface FeedbackOptions {
@@ -82,6 +95,8 @@ export interface FeedbackOptions {
    * and their content never ends up in a payload. Default `[data-feedback-ignore]`.
    */
   ignoreSelector?: string;
+  /** Keyboard shortcut that toggles comment mode (ignored while typing). `false` disables it. Default `'c'`. */
+  hotkey?: string | false;
   /** Base z-index for the widget layer. Default 2147483000. */
   zIndex?: number;
   /** UI strings. Russian by default. */
@@ -101,6 +116,8 @@ export interface FeedbackInstance {
   isOpen(): boolean;
   /** Update options that do not require re-mounting (adapter, author, labels, callbacks). */
   update(options: Partial<FeedbackOptions>): void;
+  /** Open the "My comments" panel. */
+  showComments(): void;
   /** Comments known to the widget (sent in this session or loaded via `adapter.list`). */
   getComments(): FeedbackPayload[];
   /** Remove all DOM and listeners. */

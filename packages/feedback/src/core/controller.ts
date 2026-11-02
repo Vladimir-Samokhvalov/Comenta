@@ -11,6 +11,7 @@ import { resolveSelector } from '../selector';
 import { DEFAULT_IGNORE_SELECTOR, describeTarget } from '../selector/sanitize';
 import { DEFAULT_LABELS } from '../ui/labels';
 import { Popover } from '../ui/popover';
+import { Menu, Panel, type PanelItem } from '../ui/menu';
 import { View, type Rect } from '../ui/view';
 import { h } from '../ui/h';
 import { normalizeUrl } from './url';
@@ -40,6 +41,9 @@ export class Controller {
 
   private view: View | null = null;
   private popover: Popover | null = null;
+  private menu: Menu | null = null;
+  private panel: Panel | null = null;
+  private pinsHidden = false;
   private active = false;
   private destroyed = false;
   private hoverEl: Element | null = null;
@@ -72,6 +76,7 @@ export class Controller {
       isOpen: () => this.active,
       update: (o) => this.update(o),
       getComments: () => this.comments.map((c) => c.payload),
+      showComments: () => this.openPanel(),
       destroy: () => this.destroy(),
     };
 
@@ -87,8 +92,27 @@ export class Controller {
       position,
       zIndex: this.options.zIndex ?? 2147483000,
       labels: this.labels,
+      hotkey: this.options.hotkey === undefined ? 'c' : this.options.hotkey,
       onToggle: () => this.setActive(!this.active),
     });
+    this.menu = new Menu(this.doc, this.view.bar, this.labels, {
+      onShowAll: () => this.openPanel(),
+      onTogglePins: () => {
+        this.pinsHidden = !this.pinsHidden;
+        if (this.view) this.view.pinLayer.hidden = this.pinsHidden;
+        if (this.pinsHidden && this.popover?.mode === 'view') this.closePopover(false);
+        this.closeMenu(true);
+      },
+    });
+    this.panel = new Panel(this.doc, this.view.bar, this.labels, {
+      onTab: (tab) => {
+        if (tab === 'all') void this.loadAll();
+        this.renderPanel();
+      },
+      onPick: (item) => this.pickFromPanel(item),
+      onClose: () => this.closePanel(true),
+    });
+    this.view.more.addEventListener('click', () => (this.menu?.isOpen ? this.closeMenu(true) : this.openMenu()));
     this.popover = new Popover(this.doc, this.view.root, this.labels, {
       onSubmit: (kind, text) => void this.submit(kind, text),
       onCancel: () => this.closePopover(true),
@@ -103,6 +127,7 @@ export class Controller {
       this.listen(this.win, 'hashchange', () => this.onMutations(), {}),
       this.listen(this.doc, 'keydown', this.onKeyDown as EventListener, { capture: true }),
       this.listen(this.doc, 'focusin', this.onFocusIn as EventListener, { capture: true }),
+      this.listen(this.doc, 'pointerdown', this.onOutsidePointer as EventListener, { capture: true }),
     );
 
     const MO = (this.win as Window & typeof globalThis).MutationObserver;
@@ -140,6 +165,8 @@ export class Controller {
     this.view?.destroy();
     this.view = null;
     this.popover = null;
+    this.menu = null;
+    this.panel = null;
     this.comments = [];
     this.hoverEl = this.selectedEl = null;
     if (current === this) current = null;
@@ -249,8 +276,21 @@ export class Controller {
   };
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' && e.key !== 'Esc') return;
-    if (this.popover?.isOpen) {
+    if (e.key !== 'Escape' && e.key !== 'Esc') {
+      this.onHotkey(e);
+      return;
+    }
+    const consume = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    if (this.menu?.isOpen) {
+      consume();
+      this.closeMenu(true);
+    } else if (this.panel?.isOpen) {
+      consume();
+      this.closePanel(true);
+    } else if (this.popover?.isOpen) {
       e.preventDefault();
       e.stopPropagation();
       this.closePopover(true);
@@ -261,6 +301,102 @@ export class Controller {
       this.view?.toggle.focus({ preventScroll: true });
     }
   };
+
+  private onHotkey(e: KeyboardEvent) {
+    const key = this.options.hotkey === undefined ? 'c' : this.options.hotkey;
+    if (!key || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.key.toLowerCase() !== key.toLowerCase()) return;
+    if (this.popover?.isOpen) return;
+    const t = e.composedPath()[0] as HTMLElement | undefined;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName ?? ''))) return;
+    e.preventDefault();
+    this.setActive(!this.active);
+  }
+
+  private onOutsidePointer = (e: PointerEvent) => {
+    const path = e.composedPath();
+    if (this.menu?.isOpen && !path.includes(this.menu.el) && !path.includes(this.view!.more)) this.closeMenu(false);
+    if (this.panel?.isOpen && !path.includes(this.view!.bar)) this.closePanel(false);
+  };
+
+  // ---------------------------------------------------------------- menu & panel
+
+  private openMenu() {
+    if (!this.menu || !this.view) return;
+    this.closePanel(false);
+    this.menu.open(this.pageComments().length, this.pinsHidden);
+    this.view.more.setAttribute('aria-expanded', 'true');
+    this.view.setPopupOpen(true);
+  }
+
+  private closeMenu(returnFocus: boolean) {
+    if (!this.menu?.isOpen || !this.view) return;
+    this.menu.close();
+    this.view.more.setAttribute('aria-expanded', 'false');
+    this.view.setPopupOpen(!!this.panel?.isOpen);
+    if (returnFocus) this.view.more.focus({ preventScroll: true });
+  }
+
+  private openPanel() {
+    if (!this.panel || !this.view) return;
+    this.closeMenu(false);
+    if (this.popover?.isOpen) this.closePopover(false);
+    this.panel.open();
+    this.view.setPopupOpen(true);
+    this.renderPanel();
+    if (this.panel.tab === 'all') void this.loadAll();
+  }
+
+  private closePanel(returnFocus: boolean) {
+    if (!this.panel?.isOpen || !this.view) return;
+    this.panel.close();
+    this.view.setPopupOpen(!!this.menu?.isOpen);
+    if (returnFocus) this.view.more.focus({ preventScroll: true });
+  }
+
+  private renderPanel() {
+    const panel = this.panel;
+    if (!panel?.isOpen) return;
+    const page = this.pageComments();
+    const item = (c: StoredComment): PanelItem => {
+      const idx = page.indexOf(c);
+      if (idx === -1) return { payload: c.payload, n: null, missing: false };
+      if (!c.el || !c.el.isConnected) c.el = resolveSelector(c.payload.target.selector, this.doc);
+      return { payload: c.payload, n: idx + 1, missing: !c.el };
+    };
+    const list =
+      panel.tab === 'page'
+        ? page.map(item)
+        : [...this.comments].sort((a, b) => b.payload.createdAt.localeCompare(a.payload.createdAt)).map(item);
+    panel.render(list);
+  }
+
+  private async loadAll() {
+    if (!this.adapter.listAll) return;
+    try {
+      const all = await this.adapter.listAll();
+      if (this.destroyed) return;
+      for (const p of all) if (!this.comments.some((c) => c.payload.id === p.id)) this.addComment(p, null, false);
+      this.comments.sort((a, b) => a.payload.createdAt.localeCompare(b.payload.createdAt));
+      this.renumber();
+      this.updateCount();
+      this.dirty = true;
+      this.scheduleLayout();
+    } catch (err) {
+      console.warn('[feedback] adapter.listAll failed', err);
+    }
+  }
+
+  private pickFromPanel(item: PanelItem) {
+    if (item.n === null) {
+      this.win.location.assign(item.payload.page.url);
+      return;
+    }
+    const c = this.comments.find((x) => x.payload.id === item.payload.id);
+    if (!c || item.missing || !c.el) return;
+    this.closePanel(false);
+    c.el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    this.openComment(c);
+  }
 
   /** Focus trap: focus must not leave an open popover. */
   private onFocusIn = (e: FocusEvent) => {
@@ -411,8 +547,9 @@ export class Controller {
     }
   }
 
+  /** Keeps the comments panel in sync with the list of comments. */
   private updateCount() {
-    this.view?.setCount(this.pageComments().length);
+    this.renderPanel();
   }
 
   // ---------------------------------------------------------------- layout
@@ -514,7 +651,7 @@ export function initFeedback(options: FeedbackOptions = {}): FeedbackInstance {
   if (typeof document === 'undefined') {
     // SSR: return an inert instance
     const noop = () => {};
-    return { open: noop, close: noop, toggle: noop, isOpen: () => false, update: noop, getComments: () => [], destroy: noop };
+    return { open: noop, close: noop, toggle: noop, isOpen: () => false, update: noop, getComments: () => [], showComments: noop, destroy: noop };
   }
   current?.destroy();
   current = new Controller(options);
