@@ -44,6 +44,8 @@ export class RecordControl {
   private holding = false;
   private pressed = false;
   private timeEl: HTMLSpanElement | null = null;
+  /** Bottom-centre control strip used while recording the screen. */
+  private dockEl: HTMLDivElement | null = null;
   private barEl: HTMLSpanElement | null = null;
 
   constructor(
@@ -53,6 +55,8 @@ export class RecordControl {
     /** Called whenever recording / result changes (sync the submit button). */
     private readonly onChange: () => void,
     private readonly onError: (message: string | null) => void,
+    private readonly dockHost: HTMLElement | null = null,
+    private readonly onDock: (docked: boolean) => void = () => {},
   ) {
     this.mode = cfg.audio ? 'audio' : 'screen';
     this.button = h(doc, 'button', { type: 'button', class: 'ph-rec-btn' });
@@ -101,10 +105,12 @@ export class RecordControl {
         this.recorder = null;
         this.result = r;
         this.renderPreview();
+        this.undock();
         this.onChange();
       },
       onError: (err) => {
         this.recorder = null;
+        this.undock();
         this.area.hidden = true;
         this.button.hidden = false;
         this.onError(err === 'denied' ? this.labels.recDenied : this.labels.recFailed);
@@ -121,6 +127,19 @@ export class RecordControl {
     this.recorder?.stop();
   }
 
+  /** After a recording ends: focus the preview (or the textarea). */
+  focusResult(fallback: HTMLElement | null) {
+    const target = this.area.querySelector<HTMLElement>('audio, video') ?? fallback;
+    target?.focus({ preventScroll: true });
+  }
+
+  private undock() {
+    if (!this.dockEl) return;
+    this.dockEl.remove();
+    this.dockEl = null;
+    this.onDock(false);
+  }
+
   /** Cancel an in-progress recording. Returns true if there was one. */
   cancel(): boolean {
     if (!this.recorder) return false;
@@ -129,6 +148,7 @@ export class RecordControl {
     this.area.hidden = true;
     this.area.replaceChildren();
     this.button.hidden = false;
+    this.undock();
     this.onChange();
     this.button.focus({ preventScroll: true });
     return true;
@@ -149,6 +169,7 @@ export class RecordControl {
     this.recorder?.cancel();
     this.recorder = null;
     this.discard();
+    this.undock();
   }
 
   // ------------------------------------------------------------- button gestures
@@ -200,28 +221,40 @@ export class RecordControl {
   private renderRecording() {
     const d = this.doc;
     this.button.hidden = true;
-    this.timeEl = h(d, 'span', { class: 'ph-rec-time', 'aria-live': 'off' }, ['0:00']);
+    this.timeEl = h(d, 'span', { class: 'ph-rec-time', role: 'timer', 'aria-live': 'off' }, ['0:00']);
     this.barEl = h(d, 'span', { class: 'ph-rec-progress-fill' });
     const stop = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-rec-stop', 'aria-label': this.labels.recStop, title: this.labels.recStop }, [stopIcon(d)]);
     stop.addEventListener('click', () => this.stop());
     const cancel = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-rec-cancel', 'aria-label': this.labels.recCancel, title: this.labels.recCancel }, [closeIcon(d)]);
     cancel.addEventListener('click', () => this.cancel());
-    this.area.replaceChildren(
-      h(d, 'div', { class: 'ph-rec-bar', role: 'status' }, [
-        h(d, 'span', { class: 'ph-rec-dot', 'aria-hidden': 'true' }),
-        h(d, 'span', { class: 'ph-rec-mode' }, [this.mode === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel]),
-        this.timeEl,
-        h(d, 'span', { class: 'ph-rec-progress', 'aria-hidden': 'true' }, [this.barEl]),
-        cancel,
-        stop,
-      ]),
-    );
-    this.area.hidden = false;
+    const status = h(d, 'span', { class: 'ph-sr', 'aria-live': 'polite' });
+    const bar = h(d, 'div', { class: 'ph-rec-bar' }, [
+      h(d, 'span', { class: 'ph-rec-dot', 'aria-hidden': 'true' }),
+      h(d, 'span', { class: 'ph-rec-mode' }, [this.mode === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel]),
+      this.timeEl,
+      h(d, 'span', { class: 'ph-rec-progress', 'aria-hidden': 'true' }, [this.barEl]),
+      cancel,
+      stop,
+      status,
+    ]);
+    if (this.mode === 'screen' && this.dockHost) {
+      // Screen: move the controls out of the way, to the bottom centre of the window.
+      this.area.hidden = true;
+      this.dockEl = h(d, 'div', { class: 'ph-rec-dock', role: 'region', 'aria-label': this.labels.recScreen }, [bar]);
+      this.dockHost.append(this.dockEl);
+      this.onDock(true);
+    } else {
+      this.area.replaceChildren(bar);
+      this.area.hidden = false;
+    }
     stop.focus({ preventScroll: true });
+    // announced once (the ticking timer itself is not live, to keep screen readers quiet)
+    setTimeout(() => (status.textContent = this.mode === 'audio' ? this.labels.recVoice : this.labels.recScreen), 50);
   }
 
   private tick(ms: number) {
-    if (this.timeEl) this.timeEl.textContent = `${formatDuration(ms)} / ${formatDuration(this.cfg.maxMs)}`;
+    const text = `${formatDuration(ms)} / ${formatDuration(this.cfg.maxMs)}`;
+    if (this.timeEl && this.timeEl.textContent !== text) this.timeEl.textContent = text;
     if (this.barEl) this.barEl.style.width = `${Math.min(100, (ms / this.cfg.maxMs) * 100)}%`;
   }
 

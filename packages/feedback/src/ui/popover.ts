@@ -29,6 +29,8 @@ export class Popover {
   private kind: FeedbackKind | null = null;
   private submitting = false;
   private rec: RecordControl | null = null;
+  /** True while a screen recording runs and the form is tucked away. */
+  docked = false;
 
   constructor(
     private readonly doc: Document,
@@ -36,6 +38,9 @@ export class Popover {
     private readonly labels: FeedbackLabels,
     private readonly handlers: PopoverHandlers,
     private readonly record: RecordConfig | null = null,
+    /** Where the screen-recording control strip is rendered (outside the popover). */
+    private readonly dockHost: HTMLElement | null = null,
+    private readonly onDock: (docked: boolean) => void = () => {},
   ) {
     this.el = h(doc, 'div', { class: 'ph-popover', role: 'dialog', 'aria-label': labels.dialog, hidden: true });
     this.el.addEventListener('keydown', this.onKeyDown);
@@ -115,6 +120,12 @@ export class Popover {
           this.reposition?.();
         },
         (msg) => this.setError(msg),
+        this.dockHost,
+        (docked) => {
+          this.docked = docked;
+          this.onDock(docked);
+          if (!docked) this.rec?.focusResult(this.textarea);
+        },
       );
       actions.insertBefore(this.rec.button, this.submitBtn);
     }
@@ -164,6 +175,7 @@ export class Popover {
   close() {
     this.rec?.dispose();
     this.rec = null;
+    this.docked = false;
     this.mode = null;
     this.viewing = null;
     this.textarea = this.submitBtn = this.cancelBtn = null;

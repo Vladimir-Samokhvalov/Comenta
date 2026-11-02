@@ -127,6 +127,8 @@ export class Controller {
         onCancel: () => this.closePopover(true),
       },
       this.recordConfig(),
+      this.view.root,
+      (docked) => this.onDock(docked),
     );
     this.popover.reposition = () => this.scheduleLayout();
 
@@ -215,18 +217,46 @@ export class Controller {
     this.active = on;
     this.view.setActive(on);
     if (on) {
+      this.setPicking(true);
+    } else {
+      this.setPicking(false);
+      if (this.popover?.mode === 'compose') this.closePopover(false);
+    }
+  }
+
+  /** Attach / detach the picking listeners (hover, click blocking, crosshair). */
+  private setPicking(on: boolean) {
+    if (on && !this.modeOffs.length) {
       const opts = { capture: true };
       this.modeOffs.push(this.listen(this.doc, 'mousemove', this.onPointerMove as EventListener, { capture: true, passive: true }));
       this.modeOffs.push(this.listen(this.doc, 'mouseout', this.onPointerOut as EventListener, { capture: true, passive: true }));
       for (const t of BLOCKED_EVENTS) this.modeOffs.push(this.listen(this.doc, t, this.onBlocked, opts));
       this.modeOffs.push(this.listen(this.doc, 'submit', this.onBlocked, opts));
       this.setCursor(true);
-    } else {
+    } else if (!on) {
       for (const off of this.modeOffs.splice(0)) off();
       this.setCursor(false);
       this.hoverEl = null;
-      this.view.showHover(null);
-      if (this.popover?.mode === 'compose') this.closePopover(false);
+      this.view?.showHover(null);
+    }
+  }
+
+  /**
+   * Screen recording: hide everything that would end up in the video (form, toolbar,
+   * hover frame, crosshair) and let the page be used normally; the selection frame stays.
+   * A compact control strip is shown at the bottom centre instead (rendered by RecordControl).
+   */
+  private onDock(docked: boolean) {
+    if (!this.view || !this.popover) return;
+    this.view.bar.hidden = docked;
+    this.popover.el.hidden = docked;
+    if (docked) {
+      this.closeMenu(false);
+      this.closePanel(false);
+      this.setPicking(false);
+    } else {
+      if (this.active && !this.destroyed) this.setPicking(true);
+      this.scheduleLayout();
     }
   }
 
@@ -426,6 +456,7 @@ export class Controller {
   /** Focus trap: focus must not leave an open popover. */
   private onFocusIn = (e: FocusEvent) => {
     if (!this.popover?.isOpen || !this.view) return;
+    if (this.popover.docked) return; // page is usable while the screen is being recorded
     if (e.composedPath().includes(this.popover.el)) return;
     this.popover.focus();
   };

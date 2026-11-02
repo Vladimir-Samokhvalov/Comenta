@@ -282,6 +282,22 @@ export const STYLES = /* css */ `
 .ph-attachments { display: flex; flex-direction: column; gap: 8px; }
 .ph-att { color: var(--ph-ink); }
 
+/* Screen-recording strip: bottom centre, out of the way of what is being shown */
+.ph-rec-dock {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  pointer-events: auto;
+  border-radius: 12px; box-shadow: var(--ph-shadow);
+}
+.ph-rec-dock .ph-rec-bar {
+  background: #1f1e1d; color: #fff; padding: 6px 6px 6px 14px; border-radius: 12px; gap: 10px;
+}
+.ph-rec-dock .ph-rec-time { color: rgba(255,255,255,.75); }
+.ph-rec-dock .ph-rec-progress { width: 80px; flex: none; background: rgba(255,255,255,.2); }
+.ph-rec-dock .ph-icon-btn { color: rgba(255,255,255,.8); }
+.ph-rec-dock .ph-icon-btn:hover { background: rgba(255,255,255,.12); }
+.ph-rec-dock .ph-rec-stop { color: #ff6b6b; }
+.ph-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
 /* Toast */
 .ph-toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);

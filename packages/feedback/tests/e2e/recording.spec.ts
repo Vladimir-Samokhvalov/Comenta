@@ -139,6 +139,82 @@ test.describe('recording', () => {
     await expect(widget(page).submit).toBeDisabled();
   });
 
+  test('screen recording tucks the form away: strip at the bottom centre, page usable, form returns with preview', async ({ page }) => {
+    await stubScreen(page);
+    await openForm(page);
+    const w = widget(page);
+    const r = rec(page);
+    const dock = page.locator('pinhelp-feedback .ph-rec-dock');
+    await page.locator('pinhelp-feedback .ph-kind[data-kind="bug"]').click();
+    await w.textarea.fill('Смотрите, что происходит');
+    await r.btn.click(); // → screen
+    await hold(page);
+
+    await expect(dock).toBeVisible();
+    await expect(w.popover).toBeHidden();
+    await expect(w.bar).toBeHidden(); // the toolbar does not end up in the video
+    await expect(w.selBox).toBeVisible(); // the selected element stays framed
+    await expect(dock.locator('.ph-rec-stop')).toBeFocused();
+    await expect(dock.locator('[role="timer"]')).toContainText('/ 1:00');
+    const box = (await dock.boundingBox())!;
+    const vp = page.viewportSize()!;
+    expect(Math.abs(box.x + box.width / 2 - vp.width / 2)).toBeLessThan(2);
+    expect(vp.height - (box.y + box.height)).toBeLessThan(40);
+
+    // the page can be used normally while recording (no picking, no hover frame, no crosshair)
+    await page.locator('#inc').click();
+    await expect(page.locator('#counter')).toHaveText('1');
+    await page.locator('main h1').hover();
+    await expect(w.hoverBox).toBeHidden();
+    expect(await page.evaluate(() => getComputedStyle(document.querySelector('h1')!).cursor)).not.toBe('crosshair');
+
+    await page.waitForTimeout(500);
+    await dock.locator('.ph-rec-stop').click();
+    await expect(dock).toHaveCount(0);
+    await expect(w.popover).toBeVisible();
+    await expect(w.bar).toBeVisible();
+    await expect(r.video).toHaveCount(1);
+    await expect(r.video).toBeFocused();
+    await expect(w.textarea).toHaveValue('Смотрите, что происходит');
+    await expect(page.locator('pinhelp-feedback .ph-kind[data-kind="bug"]')).toHaveAttribute('aria-pressed', 'true');
+
+    // picking is back after the recording
+    await page.locator('#inc').click();
+    await expect(page.locator('#counter')).toHaveText('1');
+  });
+
+  test('screen strip: Esc and system "Stop sharing" also bring the form back', async ({ page }) => {
+    await stubScreen(page);
+    await openForm(page);
+    const w = widget(page);
+    const r = rec(page);
+    const dock = page.locator('pinhelp-feedback .ph-rec-dock');
+    await r.btn.click();
+    await hold(page);
+    await expect(dock).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dock).toHaveCount(0);
+    await expect(w.popover).toBeVisible();
+    await expect(r.btn).toBeVisible();
+
+    await hold(page);
+    await expect(dock).toBeVisible();
+    await page.waitForTimeout(400);
+    await page.evaluate(() => (window as any).__endShare());
+    await expect(dock).toHaveCount(0);
+    await expect(w.popover).toBeVisible();
+    await expect(r.video).toHaveCount(1);
+  });
+
+  test('voice recording stays inside the form', async ({ page }) => {
+    await openForm(page);
+    await hold(page);
+    await expect(rec(page).bar).toBeVisible();
+    await expect(page.locator('pinhelp-feedback .ph-rec-dock')).toHaveCount(0);
+    await expect(widget(page).popover).toBeVisible();
+    await expect(widget(page).bar).toBeVisible();
+  });
+
   test('Esc cancels a recording first, then closes the form', async ({ page }) => {
     await openForm(page);
     const r = rec(page);
