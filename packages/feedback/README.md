@@ -159,6 +159,7 @@ pnpm test           # unit (Vitest + jsdom): селектор, санитиза�
 pnpm test:e2e       # build + Playwright по демо-странице
 pnpm demo           # http://localhost:5174 — демо + мок-сервер
 pnpm size           # gzip-размеры, бюджет 30 КБ
+pnpm standalone     # dist/demo-standalone.html: демо одним файлом, открывается двойным кликом
 ```
 
 Мок-сервер (`demo/server.mjs`, без зависимостей): `POST /api/feedback` дописывает payload в `demo/feedback.log` (JSON Lines), `?fail=1` отвечает 503, `GET /api/feedback` отдаёт всё сохранённое. Демо: `/` (селектор адаптера и «враждебные стили» в блоке настроек, `?adapter=console|http|fail`), `/demo/script-tag.html` — подключение тегом.
