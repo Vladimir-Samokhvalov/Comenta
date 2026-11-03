@@ -10,7 +10,7 @@ export default defineConfig({
     lib: {
       entry: resolve(import.meta.dirname, 'src/iife.ts'),
       formats: ['iife'],
-      name: 'PinHelpFeedbackBundle',
+      name: 'ComentaBundle',
       fileName: () => 'feedback.iife.js',
     },
   },

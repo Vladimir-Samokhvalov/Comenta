@@ -48,6 +48,15 @@ describe('consoleAdapter', () => {
     expect(list.map((p) => p.id)).toEqual(['1', '3']);
   });
 
+  it('picks up comments saved under the old PinHelp key and keeps them under the new one', async () => {
+    localStorage.clear();
+    localStorage.setItem('pinhelp:feedback', JSON.stringify([payload('https://x.test/a', 'old')]));
+    const a = consoleAdapter({ log: false });
+    expect((await a.list!('https://x.test/a')).map((p) => p.id)).toEqual(['old']);
+    await a.submit(payload('https://x.test/a', 'new'));
+    expect(JSON.parse(localStorage.getItem('comenta:feedback')!).map((p: { id: string }) => p.id)).toEqual(['old', 'new']);
+  });
+
   it('works without storage', async () => {
     const a = consoleAdapter({ log: false, storage: false });
     await a.submit(payload());

@@ -12,7 +12,7 @@ const end = html.indexOf('</script>', start) + '</script>'.length;
 let page = html.slice(start, end);
 page = page
   .replace('<script type="module">', '<script>')
-  .replace("import { initFeedback, httpAdapter, consoleAdapter } from '/dist/index.js';", 'const { initFeedback, consoleAdapter } = window.PinHelpFeedback;')
+  .replace("import { initFeedback, httpAdapter, consoleAdapter } from '/dist/index.js';", 'const { initFeedback, consoleAdapter } = window.Comenta;')
   .replace(
     /const adapters = \{[\s\S]*?\n    \};/,
     `const adapters = {

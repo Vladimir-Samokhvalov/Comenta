@@ -1,5 +1,5 @@
 {
-  "name": "pinhelp",
+  "name": "comenta",
   "private": true,
   "scripts": {
     "build": "pnpm -C packages/feedback build",

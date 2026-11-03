@@ -33,7 +33,7 @@ describe('recorder helpers', () => {
     const fb = initFeedback({ adapter: { submit: async () => {} } });
     fb.open();
     document.getElementById('p')!.click();
-    const root = document.querySelector('pinhelp-feedback')!.shadowRoot!;
+    const root = document.querySelector('comenta-feedback')!.shadowRoot!;
     expect(root.querySelector('.ph-popover textarea')).not.toBeNull();
     expect(root.querySelector('.ph-rec-btn')).toBeNull();
     fb.destroy();

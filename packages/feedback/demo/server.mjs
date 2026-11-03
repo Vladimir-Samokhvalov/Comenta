@@ -126,4 +126,4 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`PinHelp demo: http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`Comenta demo: http://localhost:${PORT}`));

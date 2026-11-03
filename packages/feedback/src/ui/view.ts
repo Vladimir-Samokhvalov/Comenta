@@ -2,7 +2,7 @@ import type { FeedbackLabels, FeedbackPosition } from '../types';
 import { STYLES } from './styles';
 import { chevronIcon, commentIcon, h } from './h';
 
-export const HOST_TAG = 'pinhelp-feedback';
+export const HOST_TAG = 'comenta-feedback';
 
 export interface ViewOptions {
   position: FeedbackPosition;

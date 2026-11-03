@@ -2,7 +2,7 @@ import type { FeedbackAdapter, FeedbackFile, FeedbackPayload, FeedbackSubmitResu
 import { normalizeUrl } from '../core/url';
 
 export interface ConsoleAdapterOptions {
-  /** localStorage key. Default `pinhelp:feedback`. */
+  /** localStorage key. Default `comenta:feedback` (falls back to the old `pinhelp:feedback` when empty). */
   storageKey?: string;
   /** Set to false to skip persistence. Default: `localStorage` when available. */
   storage?: Pick<Storage, 'getItem' | 'setItem'> | false;
@@ -28,8 +28,10 @@ function toDataUrl(blob: Blob): Promise<string> {
  * Development adapter: logs the payload and keeps it in localStorage,
  * so pins survive a reload. No backend required.
  */
+const LEGACY_KEY = 'pinhelp:feedback';
+
 export function consoleAdapter(options: ConsoleAdapterOptions = {}): FeedbackAdapter {
-  const key = options.storageKey ?? 'pinhelp:feedback';
+  const key = options.storageKey ?? 'comenta:feedback';
   const log = options.log ?? true;
   const maxInline = options.maxInlineBytes ?? 1.5 * 1024 * 1024;
   const getStorage = () => {
@@ -43,7 +45,10 @@ export function consoleAdapter(options: ConsoleAdapterOptions = {}): FeedbackAda
   };
   const read = (): FeedbackPayload[] => {
     try {
-      const raw = getStorage()?.getItem(key);
+      const storage = getStorage();
+      let raw = storage?.getItem(key);
+      // Comenta used to be called PinHelp: pick up comments saved under the old default key.
+      if (raw == null && !options.storageKey) raw = storage?.getItem(LEGACY_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed) ? parsed : [];
     } catch {

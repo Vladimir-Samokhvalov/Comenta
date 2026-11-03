@@ -17,8 +17,8 @@ describe('<FeedbackWidget />', () => {
     await act(async () => {
       root.render(createElement(StrictMode, null, createElement(FeedbackWidget, { adapter, position: 'top-left', ref })));
     });
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(1);
-    const host = document.querySelector('pinhelp-feedback')!;
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(1);
+    const host = document.querySelector('comenta-feedback')!;
     expect(host.shadowRoot!.querySelector('.ph-bar')!.classList.contains('ph-pos-top-left')).toBe(true);
     expect(container.childNodes.length).toBe(0);
 
@@ -28,10 +28,10 @@ describe('<FeedbackWidget />', () => {
     await act(async () => {
       root.render(createElement(FeedbackWidget, { adapter, position: 'bottom-left', ref }));
     });
-    const toggle = document.querySelector('pinhelp-feedback')!.shadowRoot!.querySelector('.ph-bar')!;
+    const toggle = document.querySelector('comenta-feedback')!.shadowRoot!.querySelector('.ph-bar')!;
     expect(toggle.classList.contains('ph-pos-bottom-left')).toBe(true);
 
     await act(async () => root.unmount());
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(0);
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(0);
   });
 });

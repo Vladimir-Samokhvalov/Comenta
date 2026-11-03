@@ -20,8 +20,8 @@ export default defineConfig({
     reuseExistingServer: false,
     env: {
       PORT: String(PORT),
-      FEEDBACK_LOG: `${process.env.TMPDIR ?? '/tmp'}/pinhelp-e2e-feedback.log`,
-      FEEDBACK_UPLOADS: `${process.env.TMPDIR ?? '/tmp'}/pinhelp-e2e-uploads`,
+      FEEDBACK_LOG: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-feedback.log`,
+      FEEDBACK_UPLOADS: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-uploads`,
     },
   },
 });

@@ -1,4 +1,4 @@
-# PinHelp
+# Comenta
 
 Монорепо (pnpm). Пакет виджета: [`packages/feedback`](packages/feedback/README.md).
 

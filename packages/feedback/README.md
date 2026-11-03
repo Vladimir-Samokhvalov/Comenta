@@ -1,4 +1,4 @@
-# @pinhelp/feedback
+# @comenta/feedback
 
 Встраиваемый виджет комментирования элементов страницы. Пользователь включает «режим комментариев», кликает по любому элементу, пишет вопрос / предложение / ошибку, и заявка уходит разработчикам вместе с контекстом элемента (селектор, текст, положение, URL).
 
@@ -12,7 +12,7 @@
 ### npm / ESM
 
 ```ts
-import { initFeedback, httpAdapter } from '@pinhelp/feedback';
+import { initFeedback, httpAdapter } from '@comenta/feedback';
 
 const fb = initFeedback({
   adapter: httpAdapter({ endpoint: '/api/feedback' }),
@@ -28,8 +28,8 @@ fb.destroy(); // убрать DOM и все слушатели
 ### React
 
 ```tsx
-import { FeedbackWidget } from '@pinhelp/feedback/react';
-import { httpAdapter } from '@pinhelp/feedback';
+import { FeedbackWidget } from '@comenta/feedback/react';
+import { httpAdapter } from '@comenta/feedback';
 
 const adapter = httpAdapter({ endpoint: '/api/feedback' });
 
@@ -57,7 +57,7 @@ export function App() {
 ></script>
 ```
 
-Без `data-endpoint` используется `consoleAdapter`. Атрибуты: `data-endpoint`, `data-position`, `data-author-id`, `data-author-name`, `data-ignore-selector`, `data-z-index`, `data-enabled="false"`. `data-auto-init="false"` отключает автозапуск, тогда вызывайте `window.PinHelpFeedback.initFeedback({...})` сами. Экземпляр после автозапуска: `window.PinHelpFeedback.instance`.
+Без `data-endpoint` используется `consoleAdapter`. Атрибуты: `data-endpoint`, `data-position`, `data-author-id`, `data-author-name`, `data-ignore-selector`, `data-z-index`, `data-enabled="false"`. `data-auto-init="false"` отключает автозапуск, тогда вызывайте `window.Comenta.initFeedback({...})` сами. Экземпляр после автозапуска: `window.Comenta.instance`.
 
 ## Опции
 
@@ -92,7 +92,7 @@ export function App() {
 
 Цвета заданы CSS-переменными внутри shadow root (`--ph-accent` терракотовый `#c96442` — пины предложений и без категории, `--ph-bug`, `--ph-question` и др.); эмодзи категорий меняются через `labels.kindEmoji`, есть тёмная тема по `prefers-color-scheme`.
 
-Единственное, что виджет кладёт в документ сайта помимо своего host-элемента, — `<style id="pinhelp-feedback-cursor">` с курсором crosshair, и только пока режим включён.
+Единственное, что виджет кладёт в документ сайта помимо своего host-элемента, — `<style id="comenta-feedback-cursor">` с курсором crosshair, и только пока режим включён.
 
 ## Формат payload
 
@@ -147,7 +147,7 @@ interface FeedbackAdapter {
 ### Свой адаптер
 
 ```ts
-import type { FeedbackAdapter } from '@pinhelp/feedback';
+import type { FeedbackAdapter } from '@comenta/feedback';
 
 export function youtrackAdapter(opts: { baseUrl: string; project: string; token: () => string }): FeedbackAdapter {
   return {

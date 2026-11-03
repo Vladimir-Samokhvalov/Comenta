@@ -2,17 +2,17 @@ import { expect, test, type Page } from '@playwright/test';
 import { openDemo, widget } from './helpers';
 
 const rec = (page: Page) => ({
-  btn: page.locator('pinhelp-feedback .ph-rec-btn'),
-  bar: page.locator('pinhelp-feedback .ph-rec-bar'),
-  time: page.locator('pinhelp-feedback .ph-rec-time'),
-  stop: page.locator('pinhelp-feedback .ph-rec-stop'),
-  cancel: page.locator('pinhelp-feedback .ph-rec-cancel'),
-  redo: page.locator('pinhelp-feedback .ph-rec-redo'),
-  del: page.locator('pinhelp-feedback .ph-rec-delete'),
-  preview: page.locator('pinhelp-feedback .ph-rec-preview'),
-  audio: page.locator('pinhelp-feedback .ph-popover audio'),
-  video: page.locator('pinhelp-feedback .ph-popover video'),
-  note: page.locator('pinhelp-feedback .ph-rec-note'),
+  btn: page.locator('comenta-feedback .ph-rec-btn'),
+  bar: page.locator('comenta-feedback .ph-rec-bar'),
+  time: page.locator('comenta-feedback .ph-rec-time'),
+  stop: page.locator('comenta-feedback .ph-rec-stop'),
+  cancel: page.locator('comenta-feedback .ph-rec-cancel'),
+  redo: page.locator('comenta-feedback .ph-rec-redo'),
+  del: page.locator('comenta-feedback .ph-rec-delete'),
+  preview: page.locator('comenta-feedback .ph-rec-preview'),
+  audio: page.locator('comenta-feedback .ph-popover audio'),
+  video: page.locator('comenta-feedback .ph-popover video'),
+  note: page.locator('comenta-feedback .ph-rec-note'),
 });
 
 /** Replace getDisplayMedia with an animated canvas stream; exposes window.__endShare() to emulate "Stop sharing". */
@@ -80,7 +80,7 @@ test.describe('recording', () => {
     expect(pad.bottom).toBeGreaterThanOrEqual(b.height);
     await expect(r.btn).toBeVisible();
     // actions row: emojis, cancel, send — no record button there
-    const actions = page.locator('pinhelp-feedback .ph-popover .ph-actions');
+    const actions = page.locator('comenta-feedback .ph-popover .ph-actions');
     await expect(actions.locator('.ph-rec-btn')).toHaveCount(0);
     await expect(actions.locator('.ph-kind')).toHaveCount(3);
     await expect(actions.locator('.ph-btn')).toHaveText(['Отмена', 'Отправить']);
@@ -150,7 +150,7 @@ test.describe('recording', () => {
     expect((await file.body()).length).toBe(payload.attachments[0].size);
     await page.keyboard.press('Escape');
     await w.pins.first().click();
-    const player = page.locator('pinhelp-feedback .ph-popover audio');
+    const player = page.locator('comenta-feedback .ph-popover audio');
     await expect(player).toHaveAttribute('src', url);
     await expect.poll(() => player.evaluate((a: HTMLAudioElement) => a.readyState)).toBeGreaterThan(0);
   });
@@ -162,7 +162,7 @@ test.describe('recording', () => {
     await r.btn.click(); // → screen
     await hold(page);
     await expect(r.bar).toBeVisible();
-    await expect(page.locator('pinhelp-feedback .ph-rec-mode')).toHaveText('Экран');
+    await expect(page.locator('comenta-feedback .ph-rec-mode')).toHaveText('Экран');
     await page.waitForTimeout(800);
     await page.evaluate(() => (window as any).__endShare());
     await expect(r.video).toHaveCount(1);
@@ -186,8 +186,8 @@ test.describe('recording', () => {
     await openForm(page);
     const w = widget(page);
     const r = rec(page);
-    const dock = page.locator('pinhelp-feedback .ph-rec-dock');
-    await page.locator('pinhelp-feedback .ph-kind[data-kind="bug"]').click();
+    const dock = page.locator('comenta-feedback .ph-rec-dock');
+    await page.locator('comenta-feedback .ph-kind[data-kind="bug"]').click();
     await w.textarea.fill('Смотрите, что происходит');
     await r.btn.click(); // → screen
     await hold(page);
@@ -218,7 +218,7 @@ test.describe('recording', () => {
     await expect(r.video).toHaveCount(1);
     await expect(r.video).toBeFocused();
     await expect(w.textarea).toHaveValue('Смотрите, что происходит');
-    await expect(page.locator('pinhelp-feedback .ph-kind[data-kind="bug"]')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('comenta-feedback .ph-kind[data-kind="bug"]')).toHaveAttribute('aria-pressed', 'true');
 
     // picking is back after the recording
     await page.locator('#inc').click();
@@ -230,7 +230,7 @@ test.describe('recording', () => {
     await openForm(page);
     const w = widget(page);
     const r = rec(page);
-    const dock = page.locator('pinhelp-feedback .ph-rec-dock');
+    const dock = page.locator('comenta-feedback .ph-rec-dock');
     await r.btn.click();
     await hold(page);
     await expect(dock).toBeVisible();
@@ -252,7 +252,7 @@ test.describe('recording', () => {
     await openForm(page);
     await hold(page);
     await expect(rec(page).bar).toBeVisible();
-    await expect(page.locator('pinhelp-feedback .ph-rec-dock')).toHaveCount(0);
+    await expect(page.locator('comenta-feedback .ph-rec-dock')).toHaveCount(0);
     await expect(widget(page).popover).toBeVisible();
     await expect(widget(page).bar).toBeVisible();
   });
@@ -309,7 +309,7 @@ test.describe('recording', () => {
     await hold(page);
     await expect(r.preview).toBeVisible({ timeout: 5000 });
     await expect(r.note).toContainText('лимит');
-    await expect(page.locator('pinhelp-feedback .ph-rec-info')).toContainText('1:00');
+    await expect(page.locator('comenta-feedback .ph-rec-info')).toContainText('1:00');
   });
 
   test('console adapter keeps the recording as a data URL across reloads', async ({ page }) => {
@@ -325,7 +325,7 @@ test.describe('recording', () => {
     await expect(w.pins).toHaveCount(1);
     await page.reload();
     await w.pins.first().click();
-    const src = await page.locator('pinhelp-feedback .ph-popover audio').getAttribute('src');
+    const src = await page.locator('comenta-feedback .ph-popover audio').getAttribute('src');
     expect(src).toMatch(/^data:audio\/webm/);
     await page.evaluate(() => (window as any).fb.showComments());
     await expect(w.items.first()).toContainText('Голос 0:0');

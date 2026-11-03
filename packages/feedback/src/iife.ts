@@ -1,5 +1,5 @@
 /**
- * <script> build. Exposes `window.PinHelpFeedback` and auto-initialises from
+ * <script> build. Exposes `window.Comenta` and auto-initialises from
  * data-* attributes on the script tag:
  *
  *   <script src="feedback.iife.js"
@@ -8,7 +8,7 @@
  *           data-author-id="42" data-author-name="Anna"
  *           data-ignore-selector="[data-feedback-ignore]"
  *           data-z-index="2147483000"
- *           data-auto-init="false"             (opt out; call PinHelpFeedback.initFeedback yourself)
+ *           data-auto-init="false"             (opt out; call Comenta.initFeedback yourself)
  *   ></script>
  */
 import { initFeedback, httpAdapter, consoleAdapter, buildSelector } from './index';
@@ -23,7 +23,7 @@ interface Global {
 }
 
 const api: Global = { initFeedback, httpAdapter, consoleAdapter, buildSelector, instance: null };
-(window as unknown as { PinHelpFeedback: Global }).PinHelpFeedback = api;
+(window as unknown as { Comenta: Global }).Comenta = api;
 
 const script = document.currentScript as HTMLScriptElement | null;
 

@@ -1,5 +1,5 @@
 {
-  "name": "@pinhelp/feedback",
+  "name": "@comenta/feedback",
   "version": "0.1.0",
   "description": "Embeddable element-commenting widget (comment mode)",
   "type": "module",

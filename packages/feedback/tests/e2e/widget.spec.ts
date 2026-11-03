@@ -14,7 +14,7 @@ test.describe('comment mode', () => {
     await expect(w.popover).toBeVisible();
     await expect(w.textarea).toBeFocused();
     await expect(w.submit).toBeDisabled();
-    await page.locator('pinhelp-feedback .ph-kind[data-kind="bug"]').click();
+    await page.locator('comenta-feedback .ph-kind[data-kind="bug"]').click();
     await w.textarea.fill('Статус Бориса неверный');
     await expect(w.submit).toBeEnabled();
 
@@ -68,7 +68,7 @@ test.describe('comment mode', () => {
     await page.setViewportSize({ width: 1000, height: 760 });
     await page.waitForTimeout(100);
     expect(await frameMatches()).toBe(true);
-    await page.locator('pinhelp-feedback .ph-popover .ph-btn').click(); // «Закрыть»
+    await page.locator('comenta-feedback .ph-popover .ph-btn').click(); // «Закрыть»
     await expect(w.popover).toBeHidden();
     await expect(w.selBox).toBeHidden();
   });
@@ -83,14 +83,14 @@ test.describe('comment mode', () => {
     const target = await page.locator('#inc').boundingBox();
     expect(Math.abs(box!.x - target!.x)).toBeLessThan(2);
     expect(Math.abs(box!.width - target!.width)).toBeLessThan(2);
-    await expect(page.locator('pinhelp-feedback .ph-tag')).toContainText('button#inc');
+    await expect(page.locator('comenta-feedback .ph-tag')).toContainText('button#inc');
 
     await w.toggle.hover();
     await expect(w.hoverBox).toBeHidden();
 
     // ignored subtree is never highlighted itself
     await page.locator('.pii').hover();
-    await expect(page.locator('pinhelp-feedback .ph-tag')).not.toContainText('p.pii');
+    await expect(page.locator('comenta-feedback .ph-tag')).not.toContainText('p.pii');
   });
 
   test('clicks do nothing in comment mode and work again afterwards', async ({ page }) => {
@@ -154,7 +154,7 @@ test.describe('comment mode', () => {
     await expect(w.textarea).toBeFocused();
     // focus trap
     for (let i = 0; i < 6; i++) await page.keyboard.press('Tab');
-    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('PINHELP-FEEDBACK');
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('COMENTA-FEEDBACK');
     await page.keyboard.press('Escape');
     await expect(w.popover).toBeHidden();
     await expect(w.toggle).toHaveAttribute('aria-pressed', 'true');
@@ -207,7 +207,7 @@ test.describe('payload', () => {
       const { buildSelector } = await import('/dist/index.js' as string);
       const bad: string[] = [];
       for (const el of Array.from(document.body.querySelectorAll('*'))) {
-        if (el.tagName === 'PINHELP-FEEDBACK') continue;
+        if (el.tagName === 'COMENTA-FEEDBACK') continue;
         const sel = buildSelector(el);
         const found = document.querySelectorAll(sel);
         if (found.length !== 1 || found[0] !== el) bad.push(`${el.tagName} → ${sel}`);
@@ -331,8 +331,8 @@ test.describe('lifecycle & isolation', () => {
     await openDemo(page);
     await widget(page).toggle.click();
     await page.evaluate(() => (window as any).fb.destroy());
-    await expect(page.locator('pinhelp-feedback')).toHaveCount(0);
-    await expect(page.locator('#pinhelp-feedback-cursor')).toHaveCount(0);
+    await expect(page.locator('comenta-feedback')).toHaveCount(0);
+    await expect(page.locator('#comenta-feedback-cursor')).toHaveCount(0);
     expect(await page.evaluate(() => getComputedStyle(document.querySelector('h1')!).cursor)).not.toBe('crosshair');
     await page.locator('#inc').click();
     await expect(page.locator('#counter')).toHaveText('1');
@@ -341,7 +341,7 @@ test.describe('lifecycle & isolation', () => {
       const { initFeedback, consoleAdapter } = await import('/dist/index.js' as string);
       (window as any).fb = initFeedback({ adapter: consoleAdapter({ log: false }) });
     });
-    await expect(page.locator('pinhelp-feedback')).toHaveCount(1);
+    await expect(page.locator('comenta-feedback')).toHaveCount(1);
     const w = widget(page);
     await w.toggle.click();
     await page.locator('#inc').click();
@@ -396,11 +396,11 @@ test.describe('toolbar menu & comments panel', () => {
     await w.more.click();
     await expect(w.more).toHaveAttribute('aria-expanded', 'true');
     await expect(w.menu).toBeVisible();
-    await expect(page.locator('pinhelp-feedback .ph-mi-all')).toContainText('Показать все комментарии');
-    await expect(page.locator('pinhelp-feedback .ph-mi-all .ph-mi-extra')).toHaveText('2');
-    await expect(page.locator('pinhelp-feedback .ph-mi-all')).toBeFocused();
+    await expect(page.locator('comenta-feedback .ph-mi-all')).toContainText('Показать все комментарии');
+    await expect(page.locator('comenta-feedback .ph-mi-all .ph-mi-extra')).toHaveText('2');
+    await expect(page.locator('comenta-feedback .ph-mi-all')).toBeFocused();
 
-    await page.locator('pinhelp-feedback .ph-mi-all').click();
+    await page.locator('comenta-feedback .ph-mi-all').click();
     await expect(w.menu).toBeHidden();
     await expect(w.panel).toBeVisible();
     await expect(w.items).toHaveCount(2);
@@ -420,11 +420,11 @@ test.describe('toolbar menu & comments panel', () => {
 
     // hide / show pins
     await w.more.click();
-    await page.locator('pinhelp-feedback .ph-mi-pins').click();
+    await page.locator('comenta-feedback .ph-mi-pins').click();
     await expect(w.pins.first()).toBeHidden();
     await w.more.click();
-    await expect(page.locator('pinhelp-feedback .ph-mi-pins')).toContainText('Показать пины');
-    await page.locator('pinhelp-feedback .ph-mi-pins').click();
+    await expect(page.locator('comenta-feedback .ph-mi-pins')).toContainText('Показать пины');
+    await page.locator('comenta-feedback .ph-mi-pins').click();
     await expect(w.pins.last()).toBeVisible();
   });
 
@@ -445,7 +445,7 @@ test.describe('toolbar menu & comments panel', () => {
     await expect(w.items.first()).toHaveClass(/ph-item-missing/);
     await expect(w.items.first()).toContainText('элемент не найден');
 
-    await page.locator('pinhelp-feedback .ph-tab[data-tab="all"]').click();
+    await page.locator('comenta-feedback .ph-tab[data-tab="all"]').click();
     await expect(w.items).toHaveCount(2);
     await expect(w.items.first()).toContainText('/app/a');
 
@@ -472,8 +472,8 @@ test.describe('toolbar menu & comments panel', () => {
     await openDemo(page);
     const w = widget(page);
     await w.toggle.hover();
-    await expect(page.locator('pinhelp-feedback .ph-tip')).toHaveCSS('opacity', '1');
-    await expect(page.locator('pinhelp-feedback .ph-tip')).toContainText('Комментировать');
+    await expect(page.locator('comenta-feedback .ph-tip')).toHaveCSS('opacity', '1');
+    await expect(page.locator('comenta-feedback .ph-tip')).toContainText('Комментировать');
   });
 });
 
@@ -481,10 +481,10 @@ test.describe('emoji category', () => {
   test('optional: none by default, toggles, clears on second click, keyboard, sent without kind', async ({ page }) => {
     await openDemo(page);
     const w = widget(page);
-    const kind = (k: string) => page.locator(`pinhelp-feedback .ph-kind[data-kind="${k}"]`);
+    const kind = (k: string) => page.locator(`comenta-feedback .ph-kind[data-kind="${k}"]`);
     await w.toggle.click();
     await page.locator('#inc').click();
-    await expect(page.locator('pinhelp-feedback .ph-kinds')).toHaveAttribute('role', 'group');
+    await expect(page.locator('comenta-feedback .ph-kinds')).toHaveAttribute('role', 'group');
     for (const [k, emoji, label] of [['question', '🤔', 'Вопрос'], ['suggestion', '🚀', 'Предложение'], ['bug', '😢', 'Ошибка']]) {
       await expect(kind(k)).toHaveText(emoji);
       await expect(kind(k)).toHaveAttribute('aria-label', label);
@@ -520,10 +520,10 @@ test.describe('emoji category', () => {
     expect(await pin.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(201, 100, 66)');
     await page.keyboard.press('Escape');
     await pin.click();
-    await expect(page.locator('pinhelp-feedback .ph-badge')).toHaveText('#1');
+    await expect(page.locator('comenta-feedback .ph-badge')).toHaveText('#1');
     await page.keyboard.press('Escape');
     await page.evaluate(() => (window as any).fb.showComments());
-    await expect(page.locator('pinhelp-feedback .ph-item-meta').first()).not.toContainText('Предложение');
+    await expect(page.locator('comenta-feedback .ph-item-meta').first()).not.toContainText('Предложение');
   });
 
   test('other emoji turn grey right after picking (no hover needed) and get colour back after un-picking', async ({ page }) => {
@@ -531,7 +531,7 @@ test.describe('emoji category', () => {
     const w = widget(page);
     await w.toggle.click();
     await page.locator('#inc').click();
-    const kind = (k: string) => page.locator(`pinhelp-feedback .ph-kind[data-kind="${k}"]`);
+    const kind = (k: string) => page.locator(`comenta-feedback .ph-kind[data-kind="${k}"]`);
     const look = (k: string) => kind(k).evaluate((el) => ({ o: getComputedStyle(el).opacity, f: getComputedStyle(el).filter }));
     const away = () => page.mouse.move(5, 5);
 
@@ -556,7 +556,7 @@ test.describe('emoji category', () => {
     const w = widget(page);
     await w.toggle.click();
     await page.locator('#inc').click();
-    await page.locator('pinhelp-feedback .ph-kind[data-kind="question"]').click();
+    await page.locator('comenta-feedback .ph-kind[data-kind="question"]').click();
     await w.textarea.fill('Что это?');
     const req = page.waitForRequest((r) => r.url().endsWith('/api/feedback') && r.method() === 'POST');
     await w.submit.click();
@@ -564,9 +564,9 @@ test.describe('emoji category', () => {
     await page.keyboard.press('Escape');
     await expect(w.pins.first()).toHaveAttribute('data-kind', 'question');
     await w.pins.first().click();
-    await expect(page.locator('pinhelp-feedback .ph-badge')).toHaveText('#1 · 🤔 Вопрос');
+    await expect(page.locator('comenta-feedback .ph-badge')).toHaveText('#1 · 🤔 Вопрос');
     await page.keyboard.press('Escape');
     await page.evaluate(() => (window as any).fb.showComments());
-    await expect(page.locator('pinhelp-feedback .ph-item-meta').first()).toContainText('🤔 Вопрос');
+    await expect(page.locator('comenta-feedback .ph-item-meta').first()).toContainText('🤔 Вопрос');
   });
 });

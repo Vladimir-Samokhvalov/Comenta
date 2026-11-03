@@ -36,20 +36,20 @@ describe('lifecycle', () => {
     const doc = trackListeners(document);
     const win = trackListeners(window);
     const fb = initFeedback({ adapter: noopAdapter });
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(1);
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(1);
     fb.open();
     expect(fb.isOpen()).toBe(true);
-    expect(document.getElementById('pinhelp-feedback-cursor')).not.toBeNull();
+    expect(document.getElementById('comenta-feedback-cursor')).not.toBeNull();
     expect(doc.count()).toBeGreaterThan(0);
 
     fb.destroy();
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(0);
-    expect(document.getElementById('pinhelp-feedback-cursor')).toBeNull();
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(0);
+    expect(document.getElementById('comenta-feedback-cursor')).toBeNull();
     expect(doc.count()).toBe(0);
     expect(win.count()).toBe(0);
 
     const fb2 = initFeedback({ adapter: noopAdapter });
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(1);
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(1);
     fb2.destroy();
     expect(doc.count()).toBe(0);
     doc.restore();
@@ -59,13 +59,13 @@ describe('lifecycle', () => {
   it('a second initFeedback replaces the first', () => {
     initFeedback({ adapter: noopAdapter });
     const fb = initFeedback({ adapter: noopAdapter });
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(1);
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(1);
     fb.destroy();
   });
 
   it('enabled: false renders nothing', () => {
     const fb = initFeedback({ adapter: noopAdapter, enabled: false });
-    expect(document.querySelectorAll('pinhelp-feedback').length).toBe(0);
+    expect(document.querySelectorAll('comenta-feedback').length).toBe(0);
     fb.open();
     expect(fb.isOpen()).toBe(false);
     fb.destroy();
@@ -79,7 +79,7 @@ describe('lifecycle', () => {
     fb.open();
     document.getElementById('b')!.click();
     expect(onClick).not.toHaveBeenCalled();
-    const host = document.querySelector('pinhelp-feedback')!;
+    const host = document.querySelector('comenta-feedback')!;
     expect(host.shadowRoot!.querySelector('.ph-popover')!.hasAttribute('hidden')).toBe(false);
     fb.close();
     document.getElementById('b')!.click();

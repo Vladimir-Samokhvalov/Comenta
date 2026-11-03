@@ -28,7 +28,7 @@ interface StoredComment {
 
 type Off = () => void;
 
-const CURSOR_STYLE_ID = 'pinhelp-feedback-cursor';
+const CURSOR_STYLE_ID = 'comenta-feedback-cursor';
 const MUTATION_THROTTLE_MS = 100;
 /** Events swallowed while picking, so the page never sees the interaction. */
 const BLOCKED_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu'] as const;

@@ -1,20 +1,20 @@
 import { expect, type Page, type Request } from '@playwright/test';
 
 export const widget = (page: Page) => ({
-  toggle: page.locator('pinhelp-feedback .ph-toggle'),
-  bar: page.locator('pinhelp-feedback .ph-bar'),
-  more: page.locator('pinhelp-feedback .ph-more'),
-  menu: page.locator('pinhelp-feedback .ph-menu'),
-  panel: page.locator('pinhelp-feedback .ph-panel'),
-  items: page.locator('pinhelp-feedback .ph-item'),
-  hoverBox: page.locator('pinhelp-feedback .ph-box:not(.ph-selected)'),
-  selBox: page.locator('pinhelp-feedback .ph-box.ph-selected'),
-  popover: page.locator('pinhelp-feedback .ph-popover'),
-  textarea: page.locator('pinhelp-feedback .ph-textarea'),
-  submit: page.locator('pinhelp-feedback .ph-btn-primary'),
-  error: page.locator('pinhelp-feedback .ph-error'),
-  toast: page.locator('pinhelp-feedback .ph-toast'),
-  pins: page.locator('pinhelp-feedback .ph-pin'),
+  toggle: page.locator('comenta-feedback .ph-toggle'),
+  bar: page.locator('comenta-feedback .ph-bar'),
+  more: page.locator('comenta-feedback .ph-more'),
+  menu: page.locator('comenta-feedback .ph-menu'),
+  panel: page.locator('comenta-feedback .ph-panel'),
+  items: page.locator('comenta-feedback .ph-item'),
+  hoverBox: page.locator('comenta-feedback .ph-box:not(.ph-selected)'),
+  selBox: page.locator('comenta-feedback .ph-box.ph-selected'),
+  popover: page.locator('comenta-feedback .ph-popover'),
+  textarea: page.locator('comenta-feedback .ph-textarea'),
+  submit: page.locator('comenta-feedback .ph-btn-primary'),
+  error: page.locator('comenta-feedback .ph-error'),
+  toast: page.locator('comenta-feedback .ph-toast'),
+  pins: page.locator('comenta-feedback .ph-pin'),
 });
 
 export async function openDemo(page: Page, query = '') {
@@ -45,7 +45,7 @@ export async function menuCount(page: Page): Promise<string> {
   const w = widget(page);
   await w.more.click();
   await expect(w.menu).toBeVisible();
-  const n = (await page.locator('pinhelp-feedback .ph-mi-all .ph-mi-extra').textContent()) ?? '';
+  const n = (await page.locator('comenta-feedback .ph-mi-all .ph-mi-extra').textContent()) ?? '';
   await page.keyboard.press('Escape');
   await expect(w.menu).toBeHidden();
   return n;
