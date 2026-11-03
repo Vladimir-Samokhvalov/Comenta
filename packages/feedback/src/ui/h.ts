@@ -70,3 +70,6 @@ export const screenIcon = (doc: Document) =>
 export const stopIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M4.5 4.5h7v7h-7z', '1.8');
 export const redoIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M3 8a5 5 0 1 0 1.5-3.6M3 2.5v3h3', '1.5');
 export const trashIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M2.5 4.5h11M6.5 4.5V3h3v1.5M4 4.5l.6 8.5h6.8l.6-8.5', '1.5');
+export const checkIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M3 8.5 6.5 12 13 4.5', '1.7');
+export const reopenIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3', '1.5');
+export const pencilIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M10.5 2.5l3 3L6 13H3v-3z', '1.5');

@@ -25,6 +25,8 @@ export const FeedbackWidget = forwardRef<FeedbackInstance | null, FeedbackWidget
       update: (o) => instance.current?.update(o),
       getComments: () => instance.current?.getComments() ?? [],
       showComments: () => instance.current?.showComments(),
+      openThread: (id) => instance.current?.openThread(id) ?? false,
+      getUnreadCount: () => instance.current?.getUnreadCount() ?? 0,
       destroy: () => instance.current?.destroy(),
     }),
     [],
@@ -48,8 +50,10 @@ export const FeedbackWidget = forwardRef<FeedbackInstance | null, FeedbackWidget
       author: props.author,
       onSubmit: props.onSubmit,
       onError: props.onError,
+      onReply: props.onReply,
+      onStatusChange: props.onStatusChange,
     });
-  }, [props.adapter, props.author, props.onSubmit, props.onError]);
+  }, [props.adapter, props.author, props.onSubmit, props.onError, props.onReply, props.onStatusChange]);
 
   return null;
 });

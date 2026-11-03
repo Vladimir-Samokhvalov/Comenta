@@ -1,36 +1,36 @@
-import type { FeedbackKind, FeedbackLabels, FeedbackPayload } from '../types';
+import type { FeedbackKind, FeedbackLabels } from '../types';
 import { placePopover } from '../core/position';
 import { h } from './h';
-import { attachmentsView, RecordControl, type RecordConfig } from './record';
+import type { RecordConfig } from './record';
 import type { Recording } from '../core/recorder';
 import type { Rect } from './view';
+import { Composer } from './composer';
+import { Thread, type ThreadHandlers, type ThreadModel } from './thread';
 
 const KINDS: FeedbackKind[] = ['question', 'suggestion', 'bug'];
 const FOCUSABLE =
-  'button:not([disabled]):not([hidden]), textarea:not([disabled]), input:not([disabled]), audio[controls], video[controls], [tabindex]:not([tabindex="-1"])';
+  'button:not([disabled]):not([hidden]), textarea:not([disabled]), input:not([disabled]):not([hidden]), audio[controls], video[controls], [tabindex]:not([tabindex="-1"])';
 
 export interface PopoverHandlers {
-  onSubmit: (kind: FeedbackKind | null, text: string, recording: Recording | null) => void;
+  onSubmit: (kind: FeedbackKind | null, text: string, recording: Recording | null, name: string) => void;
   onCancel: () => void;
 }
 
 export type PopoverMode = 'compose' | 'view';
 
-/** The popover dialog: compose form or read-only view of a sent comment. */
+/** The popover dialog: the comment form, or a comment thread. */
 export class Popover {
   readonly el: HTMLDivElement;
   mode: PopoverMode | null = null;
   /** id of the comment shown in view mode */
   viewing: string | null = null;
-  private textarea: HTMLTextAreaElement | null = null;
+  thread: Thread | null = null;
+  private composer: Composer | null = null;
   private submitBtn: HTMLButtonElement | null = null;
-  private cancelBtn: HTMLButtonElement | null = null;
-  private errorEl: HTMLDivElement | null = null;
   private kind: FeedbackKind | null = null;
   private submitting = false;
-  private rec: RecordControl | null = null;
-  /** True while a screen recording runs and the form is tucked away. */
-  docked = false;
+  /** Set by the controller: re-run positioning when the popover changes size. */
+  reposition: (() => void) | null = null;
 
   constructor(
     private readonly doc: Document,
@@ -53,16 +53,21 @@ export class Popover {
     return this.mode !== null;
   }
 
-  openCompose() {
+  /** True while a screen recording runs and the form is tucked away. */
+  get docked() {
+    return !!(this.composer?.docked || this.thread?.composer?.docked);
+  }
+
+  openCompose(askName = false) {
     if (this.mode === 'compose') {
-      this.textarea?.focus();
+      this.composer?.focus();
       return;
     }
+    this.reset();
     const d = this.doc;
     this.mode = 'compose';
-    this.viewing = null;
-    this.submitting = false;
-    this.kind = null;
+    this.el.setAttribute('aria-label', this.labels.dialog);
+    this.el.classList.remove('ph-popover-thread');
 
     // Optional category: three emoji toggles, at most one pressed; clicking the pressed one clears it.
     const kinds = h(d, 'div', { class: 'ph-kinds', role: 'group', 'aria-label': this.labels.kindGroup });
@@ -88,127 +93,89 @@ export class Popover {
       buttons[(i + step + buttons.length) % buttons.length].focus();
     });
 
-    const ta = h(d, 'textarea', { class: 'ph-textarea', rows: 3, 'aria-label': this.labels.textarea, placeholder: this.labels.placeholder });
-    ta.addEventListener('input', () => {
-      this.autoGrow();
-      this.syncSubmit();
+    const composer = new Composer(d, {
+      labels: this.labels,
+      record: this.record,
+      placeholder: this.labels.placeholder,
+      ariaLabel: this.labels.textarea,
+      askName,
+      dockHost: this.dockHost,
+      onDock: this.onDock,
+      onChange: () => this.syncSubmit(),
+      reposition: () => this.reposition?.(),
     });
-    this.textarea = ta;
+    this.composer = composer;
 
-    this.errorEl = h(d, 'div', { class: 'ph-error', role: 'alert', hidden: true });
-
-    const isMac = /Mac|iPhone|iPad/.test(d.defaultView?.navigator.platform ?? '');
-    this.cancelBtn = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.cancel }, [this.labels.cancel]);
-    this.cancelBtn.addEventListener('click', () => this.handlers.onCancel());
-    this.submitBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary', 'aria-label': this.labels.submit, title: isMac ? '⌘↵' : 'Ctrl+↵', disabled: true }, [
+    const cancelBtn = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.cancel }, [this.labels.cancel]);
+    cancelBtn.addEventListener('click', () => this.handlers.onCancel());
+    this.submitBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary', 'aria-label': this.labels.submit, title: isMac(d) ? '⌘↵' : 'Ctrl+↵', disabled: true }, [
       this.labels.submit,
     ]);
     this.submitBtn.addEventListener('click', () => this.trySubmit());
 
-    const actions = h(d, 'div', { class: 'ph-actions' }, [
-      kinds,
-      this.cancelBtn,
-      this.submitBtn,
-    ]);
-
-    if (this.record) {
-      this.rec = new RecordControl(
-        d,
-        this.record,
-        this.labels,
-        () => {
-          this.syncSubmit();
-          this.reposition?.();
-        },
-        (msg) => this.setError(msg),
-        this.dockHost,
-        (docked) => {
-          this.docked = docked;
-          this.onDock(docked);
-          if (!docked) this.rec?.focusResult(this.textarea);
-        },
-      );
-    }
-
-    // The record button lives inside the text field, in its bottom-right corner.
-    const field = h(d, 'div', { class: 'ph-field' }, [ta]);
-    if (this.rec) {
-      field.setAttribute('data-rec', '');
-      field.append(this.rec.button);
-    }
-
-    this.el.replaceChildren(field, ...(this.rec ? [this.rec.area] : []), this.errorEl, actions);
+    this.el.replaceChildren(...composer.nodes, h(d, 'div', { class: 'ph-actions' }, [kinds, cancelBtn, this.submitBtn]));
     this.el.hidden = false;
-    ta.focus({ preventScroll: true });
+    composer.focus();
   }
 
-  openView(payload: FeedbackPayload, n: number) {
-    const d = this.doc;
+  openThread(model: ThreadModel, handlers: ThreadHandlers) {
+    this.reset();
     this.mode = 'view';
-    this.viewing = payload.id;
-    this.textarea = this.submitBtn = this.cancelBtn = null;
-    this.errorEl = null;
-    const close = h(d, 'button', { type: 'button', class: 'ph-btn', 'aria-label': this.labels.close }, [this.labels.close]);
-    close.addEventListener('click', () => this.handlers.onCancel());
-    let when = '';
-    try {
-      when = new Date(payload.createdAt).toLocaleString();
-    } catch {
-      /* ignore */
-    }
-    const text = payload.text ? h(d, 'div', { class: 'ph-view-text', tabindex: 0 }, [payload.text]) : null;
-    const media = payload.attachments?.length ? attachmentsView(d, payload.attachments, this.labels) : null;
-    this.el.replaceChildren(
-      h(d, 'div', { class: 'ph-view-head' }, [
-        h(d, 'span', { class: 'ph-badge' }, [payload.kind ? `#${n} · ${this.labels.kindEmoji[payload.kind]} ${this.labels.kinds[payload.kind]}` : `#${n}`]),
-        h(d, 'span', { class: 'ph-meta' }, [when]),
-      ]),
-      ...(text ? [text] : []),
-      ...(media ? [media] : []),
-      h(d, 'div', { class: 'ph-actions' }, [close]),
+    this.viewing = model.payload.id;
+    this.el.setAttribute('aria-label', this.labels.thread);
+    this.el.classList.add('ph-popover-thread');
+    this.thread = new Thread(
+      this.doc,
+      { labels: this.labels, record: this.record, dockHost: this.dockHost, onDock: this.onDock, reposition: () => this.reposition?.() },
+      model,
+      handlers,
     );
+    this.el.replaceChildren(...this.thread.nodes);
     this.el.hidden = false;
-    close.focus({ preventScroll: true });
+    this.thread.focus();
   }
 
-  /** Cancel an in-progress recording; true if there was one (Esc handling). */
-  cancelRecording(): boolean {
-    return this.rec?.cancel() ?? false;
+  /** Esc: cancel a recording, then reply editing; true if something was cancelled. */
+  handleEscape(): boolean {
+    if (this.composer?.cancelRecording() || this.thread?.composer?.cancelRecording()) return true;
+    return this.thread?.handleEscape() ?? false;
   }
-
-  /** Set by the controller: re-run positioning when the popover changes size. */
-  reposition: (() => void) | null = null;
 
   close() {
-    this.rec?.dispose();
-    this.rec = null;
-    this.docked = false;
+    this.reset();
+    this.el.hidden = true;
+  }
+
+  private reset() {
+    this.composer?.dispose();
+    this.thread?.dispose();
+    this.composer = null;
+    this.thread = null;
+    this.submitBtn = null;
     this.mode = null;
     this.viewing = null;
-    this.textarea = this.submitBtn = this.cancelBtn = null;
-    this.errorEl = null;
-    this.el.hidden = true;
+    this.kind = null;
+    this.submitting = false;
+    this.el.removeAttribute('aria-busy');
     this.el.replaceChildren();
   }
 
   setSubmitting(on: boolean) {
     this.submitting = on;
-    if (!this.submitBtn || !this.textarea) return;
+    if (!this.submitBtn || !this.composer) return;
     this.submitBtn.textContent = on ? this.labels.submitting : this.labels.submit;
-    this.textarea.readOnly = on;
     this.el.setAttribute('aria-busy', String(on));
-    this.syncSubmit();
+    this.composer.setBusy(on);
   }
 
   setError(message: string | null) {
-    if (!this.errorEl) return;
-    this.errorEl.textContent = message ?? '';
-    this.errorEl.hidden = !message;
-    if (message) this.textarea?.focus({ preventScroll: true });
+    this.composer?.setError(message);
   }
 
   focus() {
-    (this.textarea ?? this.focusables()[0])?.focus({ preventScroll: true });
+    if (this.composer) this.composer.focus();
+    else if (this.thread) this.thread.focus();
+    else this.focusables()[0]?.focus({ preventScroll: true });
   }
 
   position(anchor: Rect, viewport: { width: number; height: number }) {
@@ -220,38 +187,26 @@ export class Popover {
   }
 
   focusables(): HTMLElement[] {
-    return Array.from(this.el.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => {
-      // radio group: only the checked radio is in the tab sequence
-      return !(el instanceof HTMLInputElement && el.type === 'radio' && !el.checked);
-    });
+    return Array.from(this.el.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => !el.parentElement?.closest('[hidden]'));
   }
 
   private trySubmit() {
-    if (this.submitting || !this.textarea) return;
-    const text = this.textarea.value.trim();
-    const recording = this.rec?.result ?? null;
-    if ((!text && !recording) || this.rec?.recording) return;
-    this.setError(null);
-    this.handlers.onSubmit(this.kind, text, recording);
+    const c = this.composer;
+    if (this.submitting || !c || !c.ready) return;
+    c.setError(null);
+    this.handlers.onSubmit(this.kind, c.text, c.recording, c.name);
   }
 
   private syncSubmit() {
-    if (!this.submitBtn || !this.textarea) return;
-    this.submitBtn.disabled =
-      this.submitting || !!this.rec?.recording || (this.textarea.value.trim() === '' && !this.rec?.result);
-  }
-
-  private autoGrow() {
-    const ta = this.textarea;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    ta.style.height = `${Math.min(ta.scrollHeight + 2, 240)}px`;
+    if (!this.submitBtn || !this.composer) return;
+    this.submitBtn.disabled = this.submitting || !this.composer.ready;
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && this.mode === 'compose') {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      this.trySubmit();
+      if (this.mode === 'compose') this.trySubmit();
+      else this.thread?.submitShortcut(e.composedPath()[0] ?? e.target);
       return;
     }
     if (e.key === 'Tab') {
@@ -265,4 +220,8 @@ export class Popover {
       items[next].focus();
     }
   };
+}
+
+function isMac(d: Document) {
+  return /Mac|iPhone|iPad/.test(d.defaultView?.navigator.platform ?? '');
 }

@@ -15,9 +15,30 @@ export const widget = (page: Page) => ({
   error: page.locator('comenta-feedback .ph-error'),
   toast: page.locator('comenta-feedback .ph-toast'),
   pins: page.locator('comenta-feedback .ph-pin'),
+  feed: page.locator('comenta-feedback .ph-feed'),
+  msgs: page.locator('comenta-feedback .ph-msg'),
+  replyBox: page.locator('comenta-feedback .ph-reply .ph-textarea'),
+  replyBtn: page.locator('comenta-feedback .ph-reply-btn'),
+  replyResolveBtn: page.locator('comenta-feedback .ph-btn-resolve'),
+  resolveBtn: page.locator('comenta-feedback .ph-resolve'),
+  status: page.locator('comenta-feedback .ph-status'),
+  unread: page.locator('comenta-feedback .ph-unread'),
+  userSelect: page.locator('#user'),
 });
 
+const spaced = new WeakSet<Page>();
+
+/** Each test gets its own store on the mock server, so parallel tests don't see each other's comments. */
+export async function useSpace(page: Page, space = `t-${Math.random().toString(36).slice(2)}`) {
+  if (spaced.has(page)) return;
+  spaced.add(page);
+  await page.addInitScript((s) => {
+    (window as unknown as { __comentaSpace: string }).__comentaSpace = s;
+  }, space);
+}
+
 export async function openDemo(page: Page, query = '') {
+  await useSpace(page);
   await page.goto(`/${query}`);
   await expect(widget(page).toggle).toBeVisible();
 }

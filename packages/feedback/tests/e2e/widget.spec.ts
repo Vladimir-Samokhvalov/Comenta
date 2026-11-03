@@ -34,7 +34,7 @@ test.describe('comment mode', () => {
     expect(payload.target.tag).toBe('td');
     expect(payload.target.textSnippet).toBe('Борис');
     expect(payload.target.rect).toEqual({ x: expect.any(Number), y: expect.any(Number), w: expect.any(Number), h: expect.any(Number) });
-    expect(payload.author).toEqual({ id: 'demo', name: 'Демо-пользователь' });
+    expect(payload.author).toEqual({ id: 'vladimir', name: 'Владимир', role: 'owner' });
     const same = await page.evaluate((sel) => {
       const found = document.querySelectorAll(sel);
       return found.length === 1 && found[0].textContent === 'Борис';
@@ -48,10 +48,12 @@ test.describe('comment mode', () => {
     await expect(w.pins.first()).toHaveText('1');
     expect(await menuCount(page)).toBe('1');
 
-    // pin opens read-only view
+    // pin opens the thread: the comment as the first bubble, a reply field instead of the form
     await w.pins.first().click();
     await expect(w.popover).toContainText('Статус Бориса неверный');
-    await expect(w.textarea).toHaveCount(0);
+    await expect(w.msgs).toHaveCount(1);
+    await expect(w.replyBox).toBeVisible();
+    await expect(page.locator('comenta-feedback .ph-kinds')).toHaveCount(0);
 
     // the commented element is framed while its comment is open, and the frame follows it
     const td = page.locator('#table-section td', { hasText: 'Борис' });
@@ -68,7 +70,7 @@ test.describe('comment mode', () => {
     await page.setViewportSize({ width: 1000, height: 760 });
     await page.waitForTimeout(100);
     expect(await frameMatches()).toBe(true);
-    await page.locator('comenta-feedback .ph-popover .ph-btn').click(); // «Закрыть»
+    await page.locator('comenta-feedback .ph-thread-close').click();
     await expect(w.popover).toBeHidden();
     await expect(w.selBox).toBeHidden();
   });
@@ -379,7 +381,8 @@ test.describe('lifecycle & isolation', () => {
       throw new Error('click was not blocked');
     });
     const payload = await comment(page, '#btn', 'через script');
-    expect(payload.author).toEqual({ name: 'Гость' });
+    expect(payload.author.name).toBe('Гость');
+    expect(payload.author.id).toMatch(/^guest-/);
     expect(payload.target.selector).toBe('#btn');
   });
 });

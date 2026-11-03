@@ -28,6 +28,8 @@ export class View {
   readonly toggle: HTMLButtonElement;
   readonly pinLayer: HTMLDivElement;
   readonly more: HTMLButtonElement;
+  /** Counter of threads with unseen replies, on the toggle's corner. */
+  readonly unread: HTMLButtonElement;
   /** Container of the toggle, chevron, menu and panel. */
   readonly bar: HTMLDivElement;
   private readonly tip: HTMLDivElement;
@@ -82,9 +84,10 @@ export class View {
       { type: 'button', class: 'ph-more', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': opts.labels.menu },
       [chevronIcon(doc)],
     );
+    this.unread = h(doc, 'button', { type: 'button', class: 'ph-unread', hidden: true });
     this.tip = h(doc, 'div', { class: 'ph-tip', role: 'tooltip', 'aria-hidden': 'true' });
     this.setTip(false);
-    this.bar = h(doc, 'div', { class: `ph-bar ph-pos-${opts.position}` }, [this.toggle, this.more, this.tip]);
+    this.bar = h(doc, 'div', { class: `ph-bar ph-pos-${opts.position}` }, [this.toggle, this.unread, this.more, this.tip]);
     this.toggle.addEventListener('click', () => opts.onToggle());
 
     this.toast = h(doc, 'div', { class: 'ph-toast', role: 'status', 'aria-live': 'polite', hidden: true });
@@ -103,6 +106,14 @@ export class View {
     const d = this.doc;
     const key = this.opts.hotkey ? h(d, 'kbd', {}, [this.opts.hotkey.toUpperCase()]) : null;
     this.tip.replaceChildren(active ? this.opts.labels.toggleActive : this.opts.labels.toggle, ...(key ? [key] : []));
+  }
+
+  setUnread(n: number) {
+    this.unread.hidden = n <= 0;
+    this.unread.textContent = n > 99 ? '99+' : String(n);
+    const label = this.opts.labels.unread(n);
+    this.unread.setAttribute('aria-label', label);
+    this.unread.title = label;
   }
 
   /** Hide the tooltip while a menu or panel is open. */

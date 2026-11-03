@@ -35,6 +35,38 @@ export interface FeedbackPayload {
   author?: FeedbackAuthor;
   /** Voice or screen recordings. Files travel next to the payload (see `FeedbackAdapter.submit`). */
   attachments?: FeedbackAttachment[];
+  /** Thread status. Absent means `open`. */
+  status?: FeedbackStatus;
+  /** Who resolved the thread and when (set together with `status: 'resolved'`). */
+  resolvedBy?: FeedbackAuthor;
+  resolvedAt?: string;
+  /** Replies, oldest first. Returned by `list()` / `listAll()`; not sent with `submit`. */
+  replies?: FeedbackReply[];
+}
+
+export type FeedbackStatus = 'open' | 'resolved';
+
+/** A reply in a comment thread. */
+export interface FeedbackReply {
+  /** uuid, generated on the client */
+  id: string;
+  /** id of the comment this reply belongs to */
+  commentId: string;
+  text: string;
+  /** ISO 8601 */
+  createdAt: string;
+  /** ISO 8601; set when the author edited the text. */
+  updatedAt?: string;
+  author?: FeedbackAuthor;
+  attachments?: FeedbackAttachment[];
+}
+
+/** A status change sent to `adapter.setStatus`. */
+export interface FeedbackStatusChange {
+  status: FeedbackStatus;
+  by: FeedbackAuthor;
+  /** ISO 8601 */
+  at: string;
 }
 
 export type FeedbackAttachmentKind = 'audio' | 'screen';
@@ -71,6 +103,11 @@ export interface FeedbackSubmitResult {
 export interface FeedbackAuthor {
   id?: string;
   name?: string;
+  /**
+   * `owner` may resolve and reopen any thread; everyone else only their own.
+   * The widget only hides buttons; your server must enforce the same rule.
+   */
+  role?: 'owner' | 'member';
 }
 
 /**
@@ -87,6 +124,22 @@ export interface FeedbackAdapter {
   list?(pageUrl: string): Promise<FeedbackPayload[]>;
   /** Optional: all feedback of the current user across pages (the "All" tab of the comments panel). */
   listAll?(): Promise<FeedbackPayload[]>;
+  /**
+   * Optional: add a reply to a thread. Without it the thread is read-only.
+   * `files` holds the recordings described in `reply.attachments`.
+   */
+  reply?(commentId: string, reply: FeedbackReply, files?: FeedbackFile[]): Promise<void | FeedbackSubmitResult>;
+  /** Optional: edit the text of a reply (only its author is offered this). */
+  updateReply?(commentId: string, replyId: string, patch: { text: string; updatedAt: string }): Promise<void>;
+  /** Optional: delete a reply (only its author is offered this). */
+  deleteReply?(commentId: string, replyId: string): Promise<void>;
+  /** Optional: resolve or reopen a thread. */
+  setStatus?(commentId: string, change: FeedbackStatusChange): Promise<void>;
+  /**
+   * Optional: push updates (WebSocket, storage events…). Call `onChange` when comments
+   * may have changed; the widget then re-reads `list()`. Return an unsubscribe function.
+   */
+  subscribe?(onChange: () => void): () => void;
 }
 
 export type FeedbackPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
@@ -133,6 +186,32 @@ export interface FeedbackLabels {
   recFailed: string;
   recMissing: string;
   recLimit: string;
+  statusOpen: string;
+  statusResolved: string;
+  resolve: string;
+  reopen: string;
+  reply: string;
+  replyPlaceholder: string;
+  replyAndResolve: string;
+  replyTextarea: string;
+  thread: string;
+  edited: string;
+  edit: string;
+  save: string;
+  deleteReply: string;
+  deleteConfirm: string;
+  replyError: string;
+  resolvedBy: (name: string) => string;
+  resolvedByYou: string;
+  guest: string;
+  yourName: string;
+  filterOpen: string;
+  filterResolved: string;
+  filterAll: string;
+  showResolved: string;
+  hideResolved: string;
+  unread: (n: number) => string;
+  replies: (n: number) => string;
 }
 
 export interface FeedbackOptions {
@@ -159,8 +238,17 @@ export interface FeedbackOptions {
   zIndex?: number;
   /** UI strings. Russian by default. */
   labels?: Partial<FeedbackLabels>;
+  /**
+   * How often to re-read `list()` for new replies while the tab is visible, in ms.
+   * Default 30000; `false` turns polling off (e.g. when the adapter has `subscribe`).
+   */
+  pollIntervalMs?: number | false;
   /** Called after the adapter resolved. */
   onSubmit?: (payload: FeedbackPayload) => void;
+  /** Called after a reply was stored. */
+  onReply?: (reply: FeedbackReply, comment: FeedbackPayload) => void;
+  /** Called after a thread was resolved or reopened. */
+  onStatusChange?: (comment: FeedbackPayload, change: FeedbackStatusChange) => void;
   /** Called when the adapter rejected. */
   onError?: (error: unknown, payload: FeedbackPayload) => void;
 }
@@ -178,6 +266,10 @@ export interface FeedbackInstance {
   showComments(): void;
   /** Comments known to the widget (sent in this session or loaded via `adapter.list`). */
   getComments(): FeedbackPayload[];
+  /** Open a comment thread by id (scrolls to its element). Returns false if it is not on this page. */
+  openThread(id: string): boolean;
+  /** Number of threads with replies the current user has not seen. */
+  getUnreadCount(): number;
   /** Remove all DOM and listeners. */
   destroy(): void;
 }

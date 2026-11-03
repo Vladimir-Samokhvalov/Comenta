@@ -1,10 +1,12 @@
 import type { FeedbackLabels, FeedbackPayload } from '../types';
-import { closeIcon, eyeIcon, eyeOffIcon, h, listIcon } from './h';
+import { checkIcon, closeIcon, eyeIcon, eyeOffIcon, h, listIcon } from './h';
+import { displayName } from './thread';
 import { formatDuration } from '../core/recorder';
 
 export interface MenuHandlers {
   onShowAll: () => void;
   onTogglePins: () => void;
+  onToggleResolved: () => void;
 }
 
 /** Dropdown opened by the chevron next to the toggle. */
@@ -26,7 +28,7 @@ export class Menu {
     return !this.el.hidden;
   }
 
-  open(count: number, pinsHidden: boolean) {
+  open(count: number, pinsHidden: boolean, showResolved: boolean, resolvedCount: number) {
     const d = this.doc;
     const item = (icon: SVGSVGElement, text: string, onClick: () => void, extra?: string, cls = '') => {
       const b = h(d, 'button', { type: 'button', role: 'menuitem', class: `ph-mi ${cls}`, tabindex: -1 }, [
@@ -40,6 +42,7 @@ export class Menu {
     this.el.replaceChildren(
       item(listIcon(d), this.labels.showAll, this.handlers.onShowAll, String(count), 'ph-mi-all'),
       item(pinsHidden ? eyeIcon(d) : eyeOffIcon(d), pinsHidden ? this.labels.showPins : this.labels.hidePins, this.handlers.onTogglePins, undefined, 'ph-mi-pins'),
+      item(checkIcon(d), showResolved ? this.labels.hideResolved : this.labels.showResolved, this.handlers.onToggleResolved, String(resolvedCount), 'ph-mi-resolved'),
     );
     this.el.hidden = false;
     this.items()[0]?.focus({ preventScroll: true });
@@ -77,10 +80,15 @@ export interface PanelItem {
   n: number | null;
   /** On the current page but the element is not in the DOM right now. */
   missing: boolean;
+  /** Someone else wrote in the thread since the user last opened it. */
+  unread: boolean;
 }
+
+export type PanelFilter = 'open' | 'resolved' | 'all';
 
 export interface PanelHandlers {
   onTab: (tab: 'page' | 'all') => void;
+  onFilter: (filter: PanelFilter) => void;
   onPick: (item: PanelItem) => void;
   onClose: () => void;
 }
@@ -89,8 +97,10 @@ export interface PanelHandlers {
 export class Panel {
   readonly el: HTMLDivElement;
   tab: 'page' | 'all' = 'page';
+  filter: PanelFilter = 'open';
   private readonly list: HTMLDivElement;
   private readonly tabs: Record<'page' | 'all', HTMLButtonElement>;
+  private readonly filters: Record<PanelFilter, HTMLButtonElement>;
 
   constructor(
     private readonly doc: Document,
@@ -109,6 +119,16 @@ export class Panel {
       return b;
     };
     this.tabs = { page: tab('page', labels.tabPage), all: tab('all', labels.tabAll) };
+    const filter = (key: PanelFilter, text: string) => {
+      const b = h(d, 'button', { type: 'button', class: 'ph-filter', 'data-filter': key, 'aria-pressed': 'false' }, [text]);
+      b.addEventListener('click', () => {
+        this.filter = key;
+        this.syncTabs();
+        handlers.onFilter(key);
+      });
+      return b;
+    };
+    this.filters = { open: filter('open', labels.filterOpen), resolved: filter('resolved', labels.filterResolved), all: filter('all', labels.filterAll) };
     const close = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-panel-close', 'aria-label': labels.close }, [closeIcon(d)]);
     close.addEventListener('click', () => handlers.onClose());
     this.list = h(d, 'div', { class: 'ph-list', role: 'list' });
@@ -118,6 +138,7 @@ export class Panel {
         h(d, 'div', { class: 'ph-seg', role: 'tablist' }, [this.tabs.page, this.tabs.all]),
         close,
       ]),
+      h(d, 'div', { class: 'ph-panel-filters', role: 'group', 'aria-label': labels.panelTitle }, [this.filters.open, this.filters.resolved, this.filters.all]),
       this.list,
     ]);
     this.el.addEventListener('keydown', (e) => e.stopPropagation());
@@ -150,12 +171,21 @@ export class Panel {
       for (const a of p.attachments ?? []) {
         meta.push(h(d, 'span', { class: 'ph-att', 'data-kind': a.kind }, [`${a.kind === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel} ${formatDuration(a.durationMs)}`]), ' · ');
       }
+      const replies = p.replies ?? [];
+      if (replies.length) {
+        const last = replies[replies.length - 1];
+        meta.push(h(d, 'span', { class: 'ph-replies', title: this.labels.replies(replies.length) }, [`💬 ${replies.length} · ${displayName(last.author, this.labels)}`]), ' · ');
+      }
+      if (p.status === 'resolved') meta.push(h(d, 'span', { class: 'ph-resolved-mark' }, [this.labels.statusResolved]), ' · ');
       if (it.n === null) meta.push(h(d, 'span', { class: 'ph-path' }, [pathOf(p.page.url)]));
       else if (it.missing) meta.push(h(d, 'span', { class: 'ph-missing' }, [this.labels.notFound]));
       else meta.push(h(d, 'code', {}, [shortSelector(p.target.selector)]));
-      const row = h(d, 'button', { type: 'button', role: 'listitem', class: `ph-item${it.missing ? ' ph-item-missing' : ''}`, 'data-id': p.id }, [
-        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind ?? null }, [it.n === null ? '' : String(it.n)]),
+      const resolved = p.status === 'resolved';
+      const cls = `ph-item${it.missing ? ' ph-item-missing' : ''}${resolved ? ' ph-item-resolved' : ''}${it.unread ? ' ph-item-unread' : ''}`;
+      const row = h(d, 'button', { type: 'button', role: 'listitem', class: cls, 'data-id': p.id, 'aria-description': it.unread ? this.labels.unread(1) : null }, [
+        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind ?? null, 'data-resolved': resolved ? '' : null }, [resolved ? '✓' : it.n === null ? '' : String(it.n)]),
         h(d, 'span', { class: 'ph-item-body' }, [h(d, 'span', { class: 'ph-item-text' }, [p.text || (p.attachments?.[0]?.kind === 'screen' ? this.labels.recScreen : this.labels.recVoice)]), h(d, 'span', { class: 'ph-item-meta' }, meta)]),
+        it.unread ? h(d, 'span', { class: 'ph-unread-dot', 'aria-hidden': 'true' }) : null,
       ]);
       row.addEventListener('click', () => this.handlers.onPick(it));
       return row;
@@ -165,6 +195,7 @@ export class Panel {
 
   private syncTabs() {
     for (const [key, b] of Object.entries(this.tabs)) b.setAttribute('aria-selected', String(key === this.tab));
+    for (const [key, b] of Object.entries(this.filters)) b.setAttribute('aria-pressed', String(key === this.filter));
   }
 }
 

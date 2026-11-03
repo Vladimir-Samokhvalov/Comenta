@@ -1,4 +1,4 @@
-import type { FeedbackAdapter, FeedbackFile, FeedbackPayload, FeedbackSubmitResult } from '../types';
+import type { FeedbackAdapter, FeedbackAttachment, FeedbackFile, FeedbackPayload, FeedbackSubmitResult } from '../types';
 import { normalizeUrl } from '../core/url';
 
 export interface ConsoleAdapterOptions {
@@ -56,34 +56,51 @@ export function consoleAdapter(options: ConsoleAdapterOptions = {}): FeedbackAda
     }
   };
 
+  /** Inline small recordings as data: URLs so they replay after a reload. */
+  const inline = async (files: FeedbackFile[]) => {
+    const urls: Record<string, string> = {};
+    for (const f of files) {
+      if (f.blob.size <= maxInline) urls[f.attachment.id] = await toDataUrl(f.blob);
+    }
+    return urls;
+  };
+  const withUrls = <T extends { attachments?: FeedbackAttachment[] }>(item: T, urls: Record<string, string>): T =>
+    item.attachments ? { ...item, attachments: item.attachments.map((a) => (urls[a.id] ? { ...a, url: urls[a.id] } : a)) } : item;
+  /** Write; on quota errors retry once without inline recordings (`fallback`). */
+  const write = (all: FeedbackPayload[], fallback?: () => FeedbackPayload[]): boolean => {
+    const storage = getStorage();
+    if (!storage) return false;
+    try {
+      storage.setItem(key, JSON.stringify(all));
+      return true;
+    } catch (err) {
+      console.warn('[feedback] could not persist recordings to storage', err);
+      if (!fallback) return false;
+      try {
+        storage.setItem(key, JSON.stringify(fallback()));
+      } catch {
+        /* give up silently */
+      }
+      return false;
+    }
+  };
+  const mutate = (commentId: string, fn: (p: FeedbackPayload) => FeedbackPayload) => {
+    const all = read();
+    const i = all.findIndex((p) => p.id === commentId);
+    if (i === -1) throw new Error('комментарий не найден');
+    all[i] = fn(all[i]);
+    write(all);
+  };
+
   return {
     async submit(payload, files: FeedbackFile[] = []): Promise<void | FeedbackSubmitResult> {
       if (log) console.info('[feedback]', payload, files.length ? files : '');
-      const storage = getStorage();
-      if (!storage) return;
-      const attachmentUrls: Record<string, string> = {};
-      for (const f of files) {
-        if (f.blob.size <= maxInline) attachmentUrls[f.attachment.id] = await toDataUrl(f.blob);
-      }
-      const stored: FeedbackPayload = payload.attachments
-        ? { ...payload, attachments: payload.attachments.map((a) => (attachmentUrls[a.id] ? { ...a, url: attachmentUrls[a.id] } : a)) }
-        : payload;
+      if (!getStorage()) return;
+      const urls = await inline(files);
       const all = read();
-      all.push(stored);
-      try {
-        storage.setItem(key, JSON.stringify(all));
-      } catch (err) {
-        // quota: keep the comment, drop the inline recordings
-        console.warn('[feedback] could not persist recordings to storage', err);
-        all[all.length - 1] = payload;
-        try {
-          storage.setItem(key, JSON.stringify(all));
-        } catch {
-          /* give up silently */
-        }
-        return;
-      }
-      return Object.keys(attachmentUrls).length ? { attachmentUrls } : undefined;
+      all.push(withUrls(payload, urls));
+      const ok = write(all, () => [...all.slice(0, -1), payload]);
+      return ok && Object.keys(urls).length ? { attachmentUrls: urls } : undefined;
     },
     async list(pageUrl) {
       const url = normalizeUrl(pageUrl);
@@ -91,6 +108,52 @@ export function consoleAdapter(options: ConsoleAdapterOptions = {}): FeedbackAda
     },
     async listAll() {
       return read();
+    },
+    async reply(commentId, reply, files: FeedbackFile[] = []) {
+      if (log) console.info('[feedback] reply', reply, files.length ? files : '');
+      if (!getStorage()) return;
+      const urls = await inline(files);
+      const stored = withUrls(reply, urls);
+      const all = read();
+      const i = all.findIndex((p) => p.id === commentId);
+      if (i === -1) throw new Error('комментарий не найден');
+      const before = all[i];
+      all[i] = { ...before, replies: [...(before.replies ?? []), stored] };
+      const ok = write(all, () => {
+        all[i] = { ...before, replies: [...(before.replies ?? []), reply] };
+        return all;
+      });
+      return ok && Object.keys(urls).length ? { attachmentUrls: urls } : undefined;
+    },
+    async updateReply(commentId, replyId, patch) {
+      mutate(commentId, (p) => ({ ...p, replies: (p.replies ?? []).map((r) => (r.id === replyId ? { ...r, ...patch } : r)) }));
+    },
+    async deleteReply(commentId, replyId) {
+      mutate(commentId, (p) => ({ ...p, replies: (p.replies ?? []).filter((r) => r.id !== replyId) }));
+    },
+    async setStatus(commentId, change) {
+      if (log) console.info('[feedback] status', commentId, change);
+      mutate(commentId, (p) => {
+        const next: FeedbackPayload = { ...p, status: change.status };
+        if (change.status === 'resolved') {
+          next.resolvedBy = change.by;
+          next.resolvedAt = change.at;
+        } else {
+          delete next.resolvedBy;
+          delete next.resolvedAt;
+        }
+        return next;
+      });
+    },
+    subscribe(onChange) {
+      // other tabs of the same site write to the same localStorage
+      const win = typeof window !== 'undefined' ? window : null;
+      if (!win || options.storage !== undefined) return () => {};
+      const fn = (e: StorageEvent) => {
+        if (e.key === key) onChange();
+      };
+      win.addEventListener('storage', fn);
+      return () => win.removeEventListener('storage', fn);
     },
   };
 }

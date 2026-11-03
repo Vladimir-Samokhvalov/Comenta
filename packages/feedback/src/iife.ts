@@ -35,6 +35,7 @@ export function optionsFromDataset(ds: DOMStringMap): FeedbackOptions {
   if (ds.ignoreSelector) opts.ignoreSelector = ds.ignoreSelector;
   if (ds.zIndex && !Number.isNaN(Number(ds.zIndex))) opts.zIndex = Number(ds.zIndex);
   if (ds.authorId || ds.authorName) opts.author = { id: ds.authorId, name: ds.authorName };
+  if (opts.author && (ds.authorRole === 'owner' || ds.authorRole === 'member')) opts.author.role = ds.authorRole;
   if (ds.enabled === 'false') opts.enabled = false;
   return opts;
 }
