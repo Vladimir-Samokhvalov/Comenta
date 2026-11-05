@@ -241,19 +241,18 @@ export class Thread {
 
     // header: #n · category, status, resolve / reopen, close
     const badge = p.kind ? `#${m.n} · ${L.kindEmoji[p.kind]} ${L.kinds[p.kind]}` : `#${m.n}`;
+    // closed on GitHub as "not planned" / duplicate: the same "Закрыт", in grey
+    const closedOther = resolved && !!p.issue?.stateReason && p.issue.stateReason !== 'completed' && p.issue.state === 'closed';
+    const statusTitle = resolved && p.issue?.state === 'closed' ? `GitHub: ${L.issueStateLong(p.issue)}` : null;
     const headKids: Node[] = [
       h(d, 'span', { class: 'ph-badge' }, [badge]),
-      h(d, 'span', { class: 'ph-status', 'data-status': resolved ? 'resolved' : 'open' }, [resolved ? L.statusResolved : L.statusOpen]),
+      h(d, 'span', { class: 'ph-status', 'data-status': resolved ? (closedOther ? 'closed-other' : 'resolved') : 'open', title: statusTitle }, [resolved ? L.statusResolved : L.statusOpen]),
     ];
     if (p.issue && /^https?:\/\//.test(p.issue.url)) {
       const i = p.issue;
       headKids.push(h(d, 'a', { class: 'ph-issue', href: i.url, target: '_blank', rel: 'noopener noreferrer', title: `${i.repo}#${i.number}` }, [L.issueLink(i)]));
-      // GitHub state (the server sends it to the owner and the comment's author only)
-      const state = i.unavailable ? 'unavailable' : i.state ?? null;
-      if (state) {
-        const title = state === 'unavailable' ? `${i.repo}#${i.number}` : `GitHub: ${L.issueStateLong(i)}`;
-        headKids.push(h(d, 'span', { class: 'ph-issue-state', 'data-state': state, title, 'aria-label': title }, [state === 'unavailable' ? L.issueUnavailable : L.issueState(i)]));
-      }
+      // the issue can't be reached any more: the status above lives in Comenta only
+      if (i.unavailable) headKids.push(h(d, 'span', { class: 'ph-issue-state', 'data-state': 'unavailable', title: `${i.repo}#${i.number}` }, [L.issueUnavailable]));
     }
     headKids.push(h(d, 'span', { class: 'ph-spacer' }));
     if (m.canResolve) {
@@ -272,7 +271,8 @@ export class Thread {
     let eventShown = false;
     const event = () => {
       eventShown = true;
-      const text = !p.resolvedBy ? L.statusResolved : sameAuthor(p.resolvedBy, m.me) ? L.resolvedByYou : L.resolvedBy(displayName(p.resolvedBy, L));
+      let text = !p.resolvedBy ? L.statusResolved : sameAuthor(p.resolvedBy, m.me) ? L.resolvedByYou : L.resolvedBy(displayName(p.resolvedBy, L));
+      if (p.resolvedVia === 'github') text = L.closedOnGitHub(p.resolvedBy?.name, p.issue?.stateReason ?? null);
       return h(d, 'div', { class: 'ph-event', role: 'note' }, [checkIcon(d), `${text}${p.resolvedAt ? ` · ${formatTime(p.resolvedAt, L.locale)}` : ''}`]);
     };
     for (const r of p.replies ?? []) {

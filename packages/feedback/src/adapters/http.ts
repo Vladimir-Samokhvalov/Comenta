@@ -79,7 +79,18 @@ export function httpAdapter(options: HttpAdapterOptions): FeedbackAdapter {
     } finally {
       if (timer) clearTimeout(timer);
     }
-    if (!res.ok) throw new FeedbackHttpError(`сервер ответил ${res.status}`, res.status);
+    if (!res.ok) {
+      // a readable reason from the server, e.g. `{ "error": { "message": "GitHub недоступен…" } }`
+      let reason = '';
+      try {
+        const body = (await res.json()) as { error?: { message?: unknown } | unknown };
+        const e = body?.error as { message?: unknown } | undefined;
+        if (e && typeof e.message === 'string') reason = e.message;
+      } catch {
+        /* not JSON */
+      }
+      throw new FeedbackHttpError(reason || `сервер ответил ${res.status}`, res.status);
+    }
     return res;
   }
 

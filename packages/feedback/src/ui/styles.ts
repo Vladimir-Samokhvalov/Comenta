@@ -160,8 +160,6 @@ export const STYLES = /* css */ `
 .ph-item-meta { font-size: 12px; line-height: 16px; color: var(--ph-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ph-item-meta code { font: 11px/16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--ph-hover); padding: 0 4px; border-radius: 4px; }
 .ph-missing { font-style: italic; }
-.ph-issue-mark[data-state="open"] { color: #1a7f37; }
-.ph-issue-mark[data-state="closed"] { color: #8250df; }
 .ph-issue-mark[data-state="unavailable"] { color: var(--ph-danger); }
 .ph-empty { padding: 24px 14px; text-align: center; color: var(--ph-muted); font-size: 13px; }
 
@@ -327,12 +325,11 @@ export const STYLES = /* css */ `
 .ph-spacer { flex: 1; }
 .ph-status { font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 10px; font-weight: 500; background: rgba(var(--ph-accent-rgb), .12); color: var(--ph-accent); white-space: nowrap; }
 .ph-status[data-status="resolved"] { background: rgba(var(--ph-ok-rgb), .14); color: var(--ph-ok); }
+.ph-status[data-status="closed-other"] { background: rgba(127,127,127,.16); color: var(--ph-muted); }
 .ph-issue { font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 10px; color: var(--ph-muted); background: var(--ph-hover); text-decoration: none; white-space: nowrap; font-weight: 500; }
 .ph-issue:hover { color: var(--ph-ink); background: var(--ph-pressed); }
 .ph-issue:focus-visible { outline: 2px solid var(--ph-accent); outline-offset: 1px; }
 .ph-issue-state { font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; font-weight: 500; }
-.ph-issue-state[data-state="open"] { color: #1a7f37; background: rgba(26,127,55,.1); }
-.ph-issue-state[data-state="closed"] { color: #8250df; background: rgba(130,80,223,.1); }
 .ph-issue-state[data-state="unavailable"] { color: var(--ph-danger); background: rgba(127,127,127,.12); }
 .ph-resolve[data-status="open"]:hover { color: var(--ph-ok); }
 .ph-feed { display: flex; flex-direction: column; gap: 6px; padding: 10px 10px 12px; max-height: min(340px, 50vh); overflow-y: auto; background: var(--ph-chat); overscroll-behavior: contain; }

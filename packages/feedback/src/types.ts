@@ -40,6 +40,8 @@ export interface FeedbackPayload {
   /** Who resolved the thread and when (set together with `status: 'resolved'`). */
   resolvedBy?: FeedbackAuthor;
   resolvedAt?: string;
+  /** `github`: the thread was closed by closing its issue on GitHub (`resolvedBy` is the GitHub user, if known). */
+  resolvedVia?: 'github' | (string & {});
   /** Replies, oldest first. Returned by `list()` / `listAll()`; not sent with `submit`. */
   replies?: FeedbackReply[];
   /** Issue created from this comment in a tracker (set by the backend, e.g. the GitHub integration). */
@@ -66,6 +68,8 @@ export interface FeedbackIssueLink {
   stateReason?: string | null;
   /** ISO 8601, when `state` is `closed`. */
   closedAt?: string;
+  /** `updated_at` of the issue snapshot the state comes from (sync bookkeeping). */
+  stateAt?: string;
   /** The issue can no longer be read: deleted, transferred to a repository the app can't see, or access lost. */
   unavailable?: 'deleted' | 'transferred' | 'no_access';
 }
@@ -266,6 +270,8 @@ export interface FeedbackLabels {
   issueStateLong: (issue: FeedbackIssueLink) => string;
   /** The linked issue was deleted, transferred or access to it was lost. */
   issueUnavailable: string;
+  /** Event line when the issue was closed on GitHub: `octo закрыл(а) на GitHub · не будет сделан`. */
+  closedOnGitHub: (name: string | undefined, reason: string | null) => string;
   /** Mark on replies written on GitHub. */
   fromGitHub: string;
 }

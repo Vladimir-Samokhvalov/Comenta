@@ -48,6 +48,8 @@ import {
   revokeGrant,
   syncComment,
   applyIssueState,
+  applyIssueStatus,
+  setIssueState,
   deleteReplyComment,
   fetchIssue,
   fetchIssueComments,
@@ -466,7 +468,13 @@ export function createGitHubIntegration({ root, persistComments, findComment, li
       let changed = false;
       for (const st of act.issues ?? []) {
         const c = byNumber.get(st.number);
-        if (c && applyIssueState(c.issue, st)) changed = true;
+        if (!c) continue;
+        if (applyIssueState(c.issue, st)) changed = true;
+        if (applyIssueStatus(c, st)) {
+          changed = true;
+          // listings don't say who closed it: one single-issue read does
+          if (c.status === 'resolved') void refreshIssue(space, c, true);
+        }
       }
       const groups = new Map();
       for (const gc of act.comments ?? []) {
@@ -512,6 +520,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, li
           if (res.kind === 'ok') {
             rec.etag = res.etag;
             changed = applyIssueState(c.issue, res.issue);
+            if (applyIssueStatus(c, res.issue)) changed = true;
           }
           const cs = await withGitHub(integ, (gh) => fetchIssueComments(gh, c.issue, rec.commentsEtag));
           if (cs.kind === 'ok') {
@@ -634,6 +643,35 @@ export function createGitHubIntegration({ root, persistComments, findComment, li
       if (!force && op.nextAt > Date.now()) continue;
       await processReply(space, key);
       if (!canSync(db.spaces[space])) break;
+    }
+  }
+
+  /**
+   * The thread was closed or reopened in Comenta: close or reopen its issue first. Throws a GitHubError
+   * when GitHub can't be reached: the route then answers with the error and keeps the status.
+   * Threads without a reachable issue change locally only.
+   */
+  async function onStatus(space, comment, status) {
+    const integ = db.spaces[space];
+    const issue = comment.issue;
+    if (issue?.provider !== 'github' || issue.unavailable || !integ?.config || integ.disconnected) return;
+    if (!canSync(integ)) throw new GitHubError('unauthorized', 'Нет доступа к GitHub, поэтому issue не изменить. Войдите заново на странице настроек GitHub.');
+    // replies still queued for this thread go first, so "reply and close" reads in order on GitHub
+    for (const key of Object.keys(integ.threads?.replies ?? {})) if (key.startsWith(`${comment.id}:`)) await processReply(space, key);
+    try {
+      const st = await withGitHub(integ, (gh) => setIssueState(gh, issue, status === 'resolved' ? 'closed' : 'open'));
+      applyIssueState(issue, st);
+      persistComments();
+      log(`[github] ${issue.repo}#${issue.number}: ${st.state === 'closed' ? 'закрыт' : 'открыт'} из Comenta`);
+    } catch (err) {
+      // deleted or no access: the status lives in Comenta from now on
+      if (err instanceof GitHubError && (err.status === 404 || err.status === 410)) {
+        applyIssueState(issue, { unavailable: err.status === 410 ? 'deleted' : 'no_access' });
+        persistComments();
+        return;
+      }
+      if (err instanceof GitHubError && err.code === 'unauthorized' && !botInstallation(integ)) markExpired(integ);
+      throw err;
     }
   }
 
@@ -824,6 +862,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, li
     onReply,
     onReplyEdit,
     onReplyDelete,
+    onStatus,
     drain,
     drainReplies,
     pollSpace,

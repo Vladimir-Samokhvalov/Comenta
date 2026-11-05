@@ -157,6 +157,7 @@ export function createGitHubMock(base) {
     state: i.state,
     state_reason: i.state_reason,
     closed_at: i.closed_at,
+    closed_by: i.state === 'closed' && i.closed_by ? userJson(i.closed_by) : null,
     created_at: i.created_at,
     updated_at: i.updated_at,
     comments: s.comments.filter((c) => c.repo === i.repo && c.number === i.number).length,
@@ -322,7 +323,15 @@ export function createGitHubMock(base) {
       const issue = s.issues.find((i) => i.repo === repo && i.number === Number(m[3]));
       if (!issue || !readable(repo)) return send(404, { message: 'Not Found' });
       if (issue.deleted) return send(410, { message: 'This issue was deleted' });
-      if (!m[4] && req.method === 'GET') return cached(issueJson(issue)); // after a transfer GitHub redirects; the JSON names the new repository
+      if (!m[4] && req.method === 'GET') return cached(issueJson(issue));
+      if (!m[4] && req.method === 'PATCH') {
+        const { state, state_reason } = await readBody(req);
+        const by = tok.installation ? `${MOCK_APP.slug}[bot]` : s.user.login;
+        if (state === 'closed') Object.assign(issue, { state, state_reason: state_reason ?? 'completed', closed_at: issue.state === 'closed' ? issue.closed_at : new Date().toISOString(), closed_by: by, updated_at: tick() });
+        else if (state === 'open') Object.assign(issue, { state, state_reason: issue.state === 'closed' ? 'reopened' : issue.state_reason, closed_at: null, closed_by: null, updated_at: tick() });
+        s.issueEdits = (s.issueEdits ?? 0) + 1;
+        return send(200, issueJson(issue));
+      } // after a transfer GitHub redirects; the JSON names the new repository
       if (m[4] && req.method === 'GET') {
         const { items, extra } = page(s.comments.filter((c) => c.repo === repo && c.number === issue.number).map(commentJson));
         return cached(items, extra);
@@ -502,8 +511,8 @@ export function createGitHubMock(base) {
       const issue = s.issues.find((i) => i.repo === a.repo && i.number === Number(a.number));
       if (!issue) return json(res, 404, { message: 'no such issue' }), true;
       let out = { ok: true };
-      if (a.close) Object.assign(issue, { state: 'closed', state_reason: a.close === true ? 'completed' : a.close, closed_at: new Date().toISOString(), updated_at: tick() });
-      if (a.reopen) Object.assign(issue, { state: 'open', state_reason: 'reopened', closed_at: null, updated_at: tick() });
+      if (a.close) Object.assign(issue, { state: 'closed', state_reason: a.close === true ? 'completed' : a.close, closed_at: new Date().toISOString(), closed_by: a.login ?? 'octo-dev', updated_at: tick() });
+      if (a.reopen) Object.assign(issue, { state: 'open', state_reason: 'reopened', closed_at: null, closed_by: null, updated_at: tick() });
       if (a.comment) out = { id: addComment(issue, String(a.comment), a.login ?? 'octo-dev').id };
       if (a.delete) issue.deleted = true;
       if (a.transfer) issue.transferredTo = a.transfer;

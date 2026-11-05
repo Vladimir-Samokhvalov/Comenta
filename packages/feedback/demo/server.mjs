@@ -201,7 +201,18 @@ const server = createServer(async (req, res) => {
       if (!isReplies && req.method === 'PATCH') {
         const change = JSON.parse((await readBody(req)).toString('utf8'));
         if (change.status !== 'open' && change.status !== 'resolved') return void json(res, 400, { error: 'bad status' });
+        const linked = comment.issue?.provider === 'github' && !comment.issue.unavailable;
+        // closing the thread closes the issue in the owner's repository: owner only
+        if (linked && !isOwner(req)) return void json(res, 403, { error: { code: 'forbidden', message: 'Закрыть тред с issue может только владелец сайта.' } });
+        if (comment.status === change.status || (change.status === 'open' && !comment.status)) return void json(res, 200, { ok: true }); // nothing to do (e.g. a second click)
+        try {
+          await github.onStatus(spaceOf(req), comment, change.status); // one status: the issue follows
+        } catch (err) {
+          const code = err?.code ?? 'network';
+          return void json(res, code === 'rate_limited' ? 429 : 502, { error: { code, message: `Статус не изменён: ${err?.message ?? 'GitHub недоступен.'}` } });
+        }
         comment.status = change.status;
+        delete comment.resolvedVia;
         if (change.status === 'resolved') Object.assign(comment, { resolvedBy: change.by, resolvedAt: change.at });
         else delete comment.resolvedBy, delete comment.resolvedAt;
         persist();

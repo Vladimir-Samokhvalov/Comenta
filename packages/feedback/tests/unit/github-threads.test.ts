@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   GitHubClient,
   applyIssueState,
+  applyIssueStatus,
+  setIssueState,
   deleteReplyComment,
   fetchIssue,
   fetchIssueComments,
@@ -258,5 +260,61 @@ describe('visibility', () => {
     expect(forViewer(p, { id: 'boris' }).replies).toEqual([]);
     expect(forViewer(p, {}).issue).toEqual(issue);
     expect(forViewer({ ...p, author: undefined }, { id: 'anna' }).replies).toEqual([]); // no author id: nobody matches
+  });
+});
+
+describe('one status for the thread and its issue', () => {
+  const thread = (over: Partial<FeedbackPayload> = {}) => ({ id: 'c1', issue: { ...issue }, ...over }) as unknown as FeedbackPayload;
+
+  it('closed on GitHub → thread closed, with who closed it; reopened → open', () => {
+    const p = thread();
+    applyIssueState(p.issue!, { number: 7, state: 'closed', stateReason: 'not_planned', closedAt: '2026-11-05T12:00:00Z', updatedAt: '1' });
+    expect(applyIssueStatus(p)).toBe(true);
+    expect(p).toMatchObject({ status: 'resolved', resolvedVia: 'github', resolvedAt: '2026-11-05T12:00:00Z' });
+    expect(p.resolvedBy).toBeUndefined(); // a listing does not say who
+    expect(applyIssueStatus(p, { closedBy: { login: 'octo-dev', avatarUrl: 'a' } })).toBe(true);
+    expect(p.resolvedBy).toMatchObject({ id: 'github:octo-dev', name: 'octo-dev' });
+    applyIssueState(p.issue!, { number: 7, state: 'open', stateReason: 'reopened', updatedAt: '2' });
+    expect(applyIssueStatus(p)).toBe(true);
+    expect(p.status).toBe('open');
+    expect(p.resolvedBy).toBeUndefined();
+    expect(p.resolvedVia).toBeUndefined();
+  });
+
+  it('closed in Comenta keeps its author; unavailable issues leave the status alone', () => {
+    const p = thread({ status: 'resolved', resolvedBy: { id: 'u1', name: 'Владимир' } });
+    applyIssueState(p.issue!, { number: 7, state: 'closed', stateReason: 'completed', updatedAt: '1' });
+    expect(applyIssueStatus(p, { closedBy: { login: 'comenta[bot]' } })).toBe(false);
+    expect(p.resolvedBy?.name).toBe('Владимир');
+    const gone = thread({ status: 'resolved' });
+    applyIssueState(gone.issue!, { number: 7, state: 'open', stateReason: null, updatedAt: '1' });
+    applyIssueState(gone.issue!, { unavailable: 'deleted' });
+    expect(applyIssueStatus(gone)).toBe(false);
+    expect(gone.status).toBe('resolved');
+  });
+
+  it('an older snapshot does not undo a newer change', () => {
+    const link = { ...issue };
+    applyIssueState(link, { number: 7, state: 'closed', stateReason: 'completed', updatedAt: '2026-11-05T12:00:01Z' });
+    expect(applyIssueState(link, { number: 7, state: 'open', stateReason: null, updatedAt: '2026-11-05T12:00:00Z' })).toBe(false);
+    expect(link.state).toBe('closed');
+  });
+
+  it('setIssueState closes as completed and reopens', async () => {
+    const gh = fakeGitHub({
+      'PATCH /repos/acme/web/issues/7': (req) => ok({ number: 7, state: req.body.state, state_reason: req.body.state_reason, updated_at: 'u', closed_by: req.body.state === 'closed' ? { login: 'bot' } : null }),
+    });
+    expect(await setIssueState(gh.client, issue, 'closed')).toMatchObject({ state: 'closed', stateReason: 'completed', closedBy: { login: 'bot' } });
+    expect(gh.calls[0].body).toEqual({ state: 'closed', state_reason: 'completed' });
+    expect(await setIssueState(gh.client, issue, 'open')).toMatchObject({ state: 'open' });
+    expect(gh.calls[1].body).toEqual({ state: 'open', state_reason: 'reopened' });
+  });
+
+  it('visitors see that it is closed, not who closed it on GitHub', () => {
+    const p = thread({ status: 'resolved', resolvedVia: 'github', resolvedBy: { id: 'github:octo', name: 'octo' } });
+    const v = forViewer(p, { id: 'someone' });
+    expect(v.status).toBe('resolved');
+    expect(v.resolvedBy).toBeUndefined();
+    expect(v.resolvedVia).toBeUndefined();
   });
 });

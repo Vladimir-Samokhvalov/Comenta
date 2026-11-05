@@ -50,12 +50,12 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   recMissing: 'Запись не сохранилась',
   recLimit: 'Запись остановлена: достигнут лимит длительности',
   statusOpen: 'Открыт',
-  statusResolved: 'Решён',
-  resolve: 'Отметить решённым',
+  statusResolved: 'Закрыт',
+  resolve: 'Закрыть',
   reopen: 'Открыть снова',
   reply: 'Ответить',
   replyPlaceholder: 'Ответить…',
-  replyAndResolve: 'Ответить и решить',
+  replyAndResolve: 'Ответить и закрыть',
   replyTextarea: 'Текст ответа',
   thread: 'Тред комментария',
   edited: 'изменено',
@@ -64,15 +64,15 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   deleteReply: 'Удалить',
   deleteConfirm: 'Удалить ответ?',
   replyError: 'Не удалось сохранить',
-  resolvedBy: (name) => `${name} отметил(а) решённым`,
-  resolvedByYou: 'Вы отметили решённым',
+  resolvedBy: (name) => `${name} закрыл(а)`,
+  resolvedByYou: 'Вы закрыли',
   guest: 'Гость',
   yourName: 'Ваше имя',
   filterOpen: 'Открытые',
-  filterResolved: 'Решённые',
+  filterResolved: 'Закрытые',
   filterAll: 'Все',
-  showResolved: 'Показать решённые',
-  hideResolved: 'Скрыть решённые',
+  showResolved: 'Показать закрытые',
+  hideResolved: 'Скрыть закрытые',
   unread: (n) => `${n} ${plural(n, 'тред', 'треда', 'тредов')} с новыми ответами`,
   replies: (n) => `${n} ${plural(n, 'ответ', 'ответа', 'ответов')}`,
   issueLink: (i) => `${i.provider === 'github' ? 'GitHub' : i.provider} #${i.number}`,
@@ -84,5 +84,10 @@ export const DEFAULT_LABELS: FeedbackLabels = {
     return r ? `закрыт · ${r}` : 'закрыт';
   },
   issueUnavailable: 'Issue недоступен',
+  closedOnGitHub: (name, reason) => {
+    const why: Record<string, string> = { not_planned: 'не будет сделан', duplicate: 'дубликат' };
+    const r = reason && why[reason] ? ` · ${why[reason]}` : '';
+    return `${name ? `${name} закрыл(а)` : 'Закрыт'} на GitHub${r}`;
+  },
   fromGitHub: 'из GitHub',
 };

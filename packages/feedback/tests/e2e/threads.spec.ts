@@ -66,13 +66,13 @@ test.describe('threads', () => {
     const statusReq = page.waitForRequest((r) => /\/api\/feedback\/[^/]+$/.test(r.url()) && r.method() === 'PATCH');
     await reply(page, 'Готово, поправили', true);
     expect((await statusReq).postDataJSON()).toMatchObject({ status: 'resolved', by: { id: 'vladimir', role: 'owner' } });
-    await expect(w.status).toHaveText('Решён');
-    await expect(page.locator('comenta-feedback .ph-event')).toContainText('Вы отметили решённым');
+    await expect(w.status).toHaveText('Закрыт');
+    await expect(page.locator('comenta-feedback .ph-event')).toContainText('Вы закрыли');
     await expect(w.replyResolveBtn).toBeHidden();
 
     // a reply into a resolved thread does not reopen it
     await reply(page, 'И ещё обновили текст');
-    await expect(w.status).toHaveText('Решён');
+    await expect(w.status).toHaveText('Закрыт');
 
     // resolved pins are hidden once the thread is closed; the menu shows them
     await page.keyboard.press('Escape');
@@ -249,12 +249,12 @@ test.describe('threads', () => {
     await w.pins.first().click();
     await w.replyBox.fill('Локальный ответ');
     await w.replyResolveBtn.click();
-    await expect(w.status).toHaveText('Решён');
+    await expect(w.status).toHaveText('Закрыт');
     await page.reload();
     await w.more.click();
     await page.locator('comenta-feedback .ph-mi-resolved').click();
     await w.pins.first().click();
     await expect(w.msgs).toHaveCount(2);
-    await expect(w.status).toHaveText('Решён');
+    await expect(w.status).toHaveText('Закрыт');
   });
 });

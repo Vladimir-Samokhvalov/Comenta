@@ -171,11 +171,7 @@ export class Panel {
       for (const a of p.attachments ?? []) {
         meta.push(h(d, 'span', { class: 'ph-att', 'data-kind': a.kind }, [`${a.kind === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel} ${formatDuration(a.durationMs)}`]), ' · ');
       }
-      if (p.issue && (p.issue.state || p.issue.unavailable)) {
-        const st = p.issue.unavailable ? 'unavailable' : p.issue.state;
-        const title = `${this.labels.issueLink(p.issue)}: ${st === 'unavailable' ? this.labels.issueUnavailable : this.labels.issueStateLong(p.issue)}`;
-        meta.push(h(d, 'span', { class: 'ph-issue-mark', 'data-state': st, title }, [st === 'unavailable' ? this.labels.issueUnavailable : `GitHub: ${this.labels.issueState(p.issue)}`]), ' · ');
-      }
+      if (p.issue?.unavailable) meta.push(h(d, 'span', { class: 'ph-issue-mark', 'data-state': 'unavailable', title: this.labels.issueLink(p.issue) }, [this.labels.issueUnavailable]), ' · ');
       const replies = p.replies ?? [];
       if (replies.length) {
         const last = replies[replies.length - 1];

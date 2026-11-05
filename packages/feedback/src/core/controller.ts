@@ -594,7 +594,11 @@ export class Controller {
 
   private canResolve(p: FeedbackPayload): boolean {
     const me = this.me();
-    return !!this.adapter.setStatus && (me.role === 'owner' || sameAuthor(p.author, me));
+    if (!this.adapter.setStatus) return false;
+    if (me.role === 'owner') return true;
+    // closing a thread with an issue closes the issue in the owner's repository: owner only
+    if (p.issue && !p.issue.unavailable) return false;
+    return sameAuthor(p.author, me);
   }
 
   /**
@@ -604,13 +608,17 @@ export class Controller {
   private visible(p: FeedbackPayload, me = this.me()): FeedbackPayload {
     if (me.role === 'owner' || sameAuthor(p.author, me)) return p;
     const hasState = !!p.issue && (p.issue.state !== undefined || p.issue.unavailable !== undefined);
-    if (!hasState && !p.replies?.some((r) => r.origin)) return p;
+    if (!hasState && !p.replies?.some((r) => r.origin) && !p.resolvedVia) return p;
     const out = { ...p };
     if (hasState && out.issue) {
-      const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, ...link } = out.issue;
+      const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, stateAt: _t, ...link } = out.issue;
       out.issue = link;
     }
     if (out.replies) out.replies = out.replies.filter((r) => !r.origin);
+    if (out.resolvedVia) {
+      delete out.resolvedBy;
+      delete out.resolvedVia;
+    }
     return out;
   }
 
@@ -666,6 +674,9 @@ export class Controller {
     await this.adapter.setStatus(c.payload.id, change);
     if (this.destroyed) return;
     const next: FeedbackPayload = { ...c.payload, status };
+    delete next.resolvedVia;
+    // the issue follows the thread (the server closed / reopened it before answering)
+    if (next.issue?.state && !next.issue.unavailable) next.issue = { ...next.issue, state: status === 'resolved' ? 'closed' : 'open', stateReason: status === 'resolved' ? 'completed' : 'reopened' };
     if (status === 'resolved') {
       next.resolvedBy = change.by;
       next.resolvedAt = change.at;

@@ -37,6 +37,8 @@ export interface GitHubIssueState {
   updatedAt: string;
   /** `owner/name` the issue lives in now (differs from the link after a transfer). */
   repo?: string;
+  /** Who closed it (only single-issue answers carry it, not listings). */
+  closedBy?: { login: string; avatarUrl?: string; url?: string };
 }
 
 interface IssueJson {
@@ -44,6 +46,7 @@ interface IssueJson {
   state: string;
   state_reason?: string | null;
   closed_at?: string | null;
+  closed_by?: { login: string; avatar_url?: string; html_url?: string } | null;
   updated_at: string;
   repository_url?: string;
   pull_request?: unknown;
@@ -73,12 +76,19 @@ export function issueStateOf(json: IssueJson): GitHubIssueState {
     updatedAt: json.updated_at,
   };
   if (json.state === 'closed' && json.closed_at) out.closedAt = json.closed_at;
+  if (json.state === 'closed' && json.closed_by?.login) {
+    out.closedBy = { login: json.closed_by.login, ...(json.closed_by.avatar_url ? { avatarUrl: json.closed_by.avatar_url } : {}), ...(json.closed_by.html_url ? { url: json.closed_by.html_url } : {}) };
+  }
   const m = /\/repos\/([^/]+)\/([^/]+)$/.exec(json.repository_url ?? '');
   if (m) out.repo = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}`;
   return out;
 }
 
-/** Copy a fresh state onto the link. Returns true when something the widget shows changed. */
+/**
+ * Copy a fresh state onto the link. Returns true when something the widget shows changed.
+ * A snapshot older than the one applied last (`stateAt`) is ignored, so a poll that was already
+ * on its way can't undo a close or reopen made a moment ago.
+ */
 export function applyIssueState(link: FeedbackIssueLink, s: GitHubIssueState | { unavailable: NonNullable<FeedbackIssueLink['unavailable']> }): boolean {
   const before = JSON.stringify([link.state, link.stateReason, link.closedAt, link.unavailable]);
   if ('unavailable' in s) {
@@ -87,12 +97,55 @@ export function applyIssueState(link: FeedbackIssueLink, s: GitHubIssueState | {
     link.unavailable = 'transferred'; // the old link still redirects on GitHub
   } else {
     delete link.unavailable;
+    if (link.stateAt && s.updatedAt < link.stateAt) return false;
     link.state = s.state;
     link.stateReason = s.stateReason;
+    link.stateAt = s.updatedAt;
     if (s.closedAt) link.closedAt = s.closedAt;
     else delete link.closedAt;
   }
   return before !== JSON.stringify([link.state, link.stateReason, link.closedAt, link.unavailable]);
+}
+
+/**
+ * One status for the thread and its issue: make the thread's status follow the issue
+ * (closed on GitHub → `resolved`, reopened → `open`). Call after `applyIssueState`.
+ * Returns true when the thread changed. Does nothing for unavailable issues: their status lives in Comenta.
+ */
+export function applyIssueStatus(payload: FeedbackPayload, s?: Pick<GitHubIssueState, 'closedBy'>): boolean {
+  const link = payload.issue;
+  if (!link?.state || link.unavailable) return false;
+  const before = JSON.stringify([payload.status, payload.resolvedBy, payload.resolvedAt, payload.resolvedVia]);
+  if (link.state === 'closed') {
+    const known = payload.status === 'resolved';
+    const by = s?.closedBy;
+    // closed in Comenta (we closed the issue ourselves) keeps its author; closed on GitHub names the GitHub user
+    if (!known || (payload.resolvedVia === 'github' && by)) {
+      payload.status = 'resolved';
+      payload.resolvedVia = 'github';
+      payload.resolvedAt = link.closedAt ?? payload.resolvedAt ?? new Date().toISOString();
+      if (by) payload.resolvedBy = { id: `github:${by.login.toLowerCase()}`, name: by.login, ...(by.avatarUrl ? { avatarUrl: by.avatarUrl } : {}), ...(by.url ? { url: by.url } : {}) };
+      else if (!known) delete payload.resolvedBy;
+    }
+  } else if (payload.status === 'resolved') {
+    payload.status = 'open';
+    delete payload.resolvedBy;
+    delete payload.resolvedAt;
+    delete payload.resolvedVia;
+  }
+  return before !== JSON.stringify([payload.status, payload.resolvedBy, payload.resolvedAt, payload.resolvedVia]);
+}
+
+/**
+ * Close or reopen the issue when the thread is closed or reopened in Comenta.
+ * Returns the new state; apply it with `applyIssueState`. Throws `GitHubError` (the caller shows it and keeps the status).
+ */
+export async function setIssueState(client: GitHubClient, issue: Pick<FeedbackIssueLink, 'repo' | 'number'>, state: 'open' | 'closed', reason: 'completed' | 'not_planned' | 'reopened' = state === 'closed' ? 'completed' : 'reopened'): Promise<GitHubIssueState> {
+  const res = await client.request<IssueJson>('PATCH', `${repoPath(targetOf(issue))}/issues/${issue.number}`, {
+    body: { state, state_reason: reason },
+    retry: true, // setting the same state twice is harmless
+  });
+  return issueStateOf(res.data);
 }
 
 export type IssueFetch =
@@ -355,10 +408,15 @@ export function forViewer<T extends FeedbackPayload>(payload: T, viewer: Viewer 
   if (v.owner || (!!v.id && payload.author?.id === v.id)) return payload;
   const out = { ...payload };
   if (out.issue) {
-    const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, ...link } = out.issue;
+    const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, stateAt: _t, ...link } = out.issue;
     out.issue = link;
   }
   if (out.replies?.some((r) => r.origin)) out.replies = out.replies.filter((r) => !r.origin);
+  // they see that the thread is closed, not who closed it on GitHub
+  if (out.resolvedVia) {
+    delete out.resolvedBy;
+    delete out.resolvedVia;
+  }
   return out;
 }
 

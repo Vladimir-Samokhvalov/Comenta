@@ -22,6 +22,8 @@ export {
   targetOf,
   issueStateOf,
   applyIssueState,
+  applyIssueStatus,
+  setIssueState,
   fetchIssue,
   fetchIssueComments,
   fetchRepoActivity,
