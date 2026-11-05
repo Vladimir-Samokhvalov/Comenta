@@ -246,7 +246,14 @@ export class Thread {
       h(d, 'span', { class: 'ph-status', 'data-status': resolved ? 'resolved' : 'open' }, [resolved ? L.statusResolved : L.statusOpen]),
     ];
     if (p.issue && /^https?:\/\//.test(p.issue.url)) {
-      headKids.push(h(d, 'a', { class: 'ph-issue', href: p.issue.url, target: '_blank', rel: 'noopener noreferrer', title: `${p.issue.repo}#${p.issue.number}` }, [L.issueLink(p.issue)]));
+      const i = p.issue;
+      headKids.push(h(d, 'a', { class: 'ph-issue', href: i.url, target: '_blank', rel: 'noopener noreferrer', title: `${i.repo}#${i.number}` }, [L.issueLink(i)]));
+      // GitHub state (the server sends it to the owner only)
+      const state = i.unavailable ? 'unavailable' : i.state ?? null;
+      if (state) {
+        const title = state === 'unavailable' ? `${i.repo}#${i.number}` : `GitHub: ${L.issueStateLong(i)}`;
+        headKids.push(h(d, 'span', { class: 'ph-issue-state', 'data-state': state, title, 'aria-label': title }, [state === 'unavailable' ? L.issueUnavailable : L.issueState(i)]));
+      }
     }
     headKids.push(h(d, 'span', { class: 'ph-spacer' }));
     if (m.canResolve) {
@@ -294,7 +301,15 @@ export class Thread {
     }
 
     const bubble = h(d, 'div', { class: 'ph-bubble' });
-    if (!mine) bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [displayName(item.author, L)]));
+    const external = reply?.origin === 'github';
+    if (external) {
+      wrap.classList.add('ph-msg-github');
+      const a = item.author;
+      const avatar = a?.avatarUrl && /^(https?:\/\/|\/)/.test(a.avatarUrl) ? h(d, 'img', { class: 'ph-avatar', src: a.avatarUrl, alt: '', width: 16, height: 16, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null;
+      const name = a?.url && /^https?:\/\//.test(a.url) ? h(d, 'a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, [displayName(a, L)]) : displayName(a, L);
+      const source = reply?.link?.url && /^https?:\/\//.test(reply.link.url) ? h(d, 'a', { class: 'ph-msg-source', href: reply.link.url, target: '_blank', rel: 'noopener noreferrer' }, [L.fromGitHub]) : h(d, 'span', { class: 'ph-msg-source' }, [L.fromGitHub]);
+      bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(a) }, [avatar, name, source]));
+    } else if (!mine) bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [displayName(item.author, L)]));
     if (item.text) bubble.append(h(d, 'div', { class: reply ? 'ph-msg-text' : 'ph-msg-text ph-view-text' }, [item.text]));
     if (item.attachments?.length) bubble.append(attachmentsView(d, item.attachments, L));
     bubble.append(
@@ -305,7 +320,7 @@ export class Thread {
     );
     wrap.append(bubble);
 
-    if (reply && mine && (m.canEdit || m.canDelete)) {
+    if (reply && mine && !external && (m.canEdit || m.canDelete)) {
       const tools = h(d, 'div', { class: 'ph-msg-tools' });
       if (m.canEdit && reply.text) {
         const e = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-msg-edit', 'aria-label': L.edit, title: L.edit }, [pencilIcon(d)]);

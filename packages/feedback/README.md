@@ -7,7 +7,7 @@
 * UI в Shadow DOM: стили сайта не ломают виджет, стили виджета не текут на сайт.
 * Транспорт за интерфейсом `FeedbackAdapter`: HTTP и console/localStorage из коробки, свой пишется в 10 строк.
 * React-обёртка и `<script>`-бандл с автоинициализацией.
-* Интеграция с GitHub: комментарии становятся issues (с записями и Project v2), страница настроек `<comenta-settings>`.
+* Интеграция с GitHub: комментарии становятся issues (с записями и Project v2), страница настроек `<comenta-settings>`, двусторонняя синхронизация треда с issue (статус, комментарии, ответы).
 
 ## Подключение
 
@@ -125,7 +125,13 @@ interface FeedbackPayload {
   resolvedBy?: { id?: string; name?: string };
   resolvedAt?: string;
   replies?: FeedbackReply[];     // приходит из list(); в submit не отправляется
-  issue?: { provider: 'github'; repo: string; number: number; url: string }; // ставит сервер (см. «GitHub»)
+  issue?: {                      // ставит сервер (см. «GitHub»)
+    provider: 'github'; repo: string; number: number; url: string;
+    state?: 'open' | 'closed';   // только для владельца (см. «Синхронизация с issue»)
+    stateReason?: string | null; // completed, not_planned, duplicate…
+    closedAt?: string;
+    unavailable?: 'deleted' | 'transferred' | 'no_access';
+  };
   attachments?: Array<{
     id: string;
     kind: 'audio' | 'screen';   // голосовое | запись экрана с голосом
@@ -145,8 +151,10 @@ interface FeedbackReply {
   text: string;
   createdAt: string;
   updatedAt?: string;           // если текст правили
-  author?: { id?: string; name?: string; role?: 'owner' | 'member' };
+  author?: { id?: string; name?: string; role?: 'owner' | 'member'; avatarUrl?: string; url?: string };
   attachments?: FeedbackAttachment[];
+  origin?: 'github';            // написан в GitHub (только чтение, виден только владельцу)
+  link?: { provider: 'github'; id: number; url: string }; // комментарий issue: оригинал или копия ответа
 }
 ```
 
@@ -286,6 +294,49 @@ try {
 
 Свойство `el.headers` добавляет заголовки (например CSRF-токен). События: `comenta-settings-save` (detail — настройки), `comenta-settings-logout`. Защитите эту страницу собственной авторизацией администратора: демо пускает того, кто подключил GitHub первым (или логины из `COMENTA_GITHUB_OWNERS`).
 
+### Синхронизация с issue
+
+Тред и его issue живут вместе:
+
+* **Статус.** На карточке рядом со ссылкой `GitHub #12` видно состояние issue: «открыт» или «закрыт» (причина, например «выполнен» или «не будет сделан», во всплывающей подсказке и в списке комментариев). Статус треда в Comenta («Открыт» / «Решён») остаётся вашим и сам не меняется.
+* **GitHub → Comenta.** Комментарии к issue появляются в треде с именем и аватаром автора на GitHub и пометкой «из GitHub» (ссылка на комментарий). Правки и удаления на GitHub подтягиваются. Отвечать на них можно, редактировать нельзя.
+* **Comenta → GitHub.** Ответы в треде публикуются комментарием к issue от бота приложения (без приватного ключа — от владельца) в виде `**Имя Фамилия:** текст`, с записями, если они есть. Правка и удаление ответа в Comenta правят и удаляют комментарий.
+* **Без дублей.** В комментарии, который опубликовал Comenta, есть скрытая метка `<!-- comenta:reply=<id> -->`: по ней опрос узнаёт свою копию и не импортирует её обратно, а повтор после сбоя находит уже созданный комментарий вместо второго.
+* **Видимость.** Обсуждение в issue может быть внутренним, поэтому статус и комментарии из GitHub получает только владелец сайта. Сервер вырезает их для всех остальных (`forViewer(comment, isOwner)`), виджет дополнительно прячет их, если `author.role !== 'owner'`.
+
+**Доставка — опросом.** Раз в 30–60 с сервер делает два условных запроса на весь репозиторий: `GET /repos/{o}/{r}/issues?state=all&since=…` и `GET /repos/{o}/{r}/issues/comments?since=…` с `If-None-Match`. Если ничего не изменилось, GitHub отвечает `304`, а такие ответы не расходуют лимит. Когда владелец открывает виджет (и при каждом его опросе, не чаще раза в 20 с на issue), сервер перечитывает issues показанных карточек целиком: так находятся удалённые комментарии, удалённые и перенесённые issues, а старые карточки без данных синхронизации заполняются (их прежние ответы уходят в issue). Вебхуки можно добавить позже: обработчик событий `issues` и `issue_comment` вызывает те же `applyIssueState` и `mergeIssueComments`, а опрос становится реже.
+
+```ts
+import { fetchRepoActivity, fetchIssue, fetchIssueComments, applyIssueState, mergeIssueComments,
+  postReply, updateReplyComment, deleteReplyComment, forViewer } from '@comenta/feedback/github';
+
+// опрос: cursor храните у себя (в первый раз — дата самого старого комментария с issue)
+const act = await fetchRepoActivity(gh, { owner, repo }, cursor);
+cursor = act.cursor;
+for (const s of act.issues ?? []) applyIssueState(byNumber[s.number].issue, s);
+for (const c of act.comments ?? []) {
+  const thread = byNumber[c.issueNumber];
+  const m = mergeIssueComments(thread, [c]);
+  if (m.changed) thread.replies = m.replies;
+}
+
+// ответ из Comenta → комментарий issue (повтор после сбоя — с checkExisting: true)
+reply.link = await postReply(gh, comment.issue, reply, files, { checkExisting: attempt > 0 });
+
+// GET списка: статус и комментарии GitHub — только владельцу
+res.json(comments.map((c) => forViewer(c, isOwner(req))));
+```
+
+| Ситуация | Что происходит |
+|---|---|
+| Issue удалён или перенесён в другой репозиторий | На карточке «Issue недоступен», ссылка остаётся (GitHub перенаправляет со старой) |
+| Автор комментария на GitHub не пользуется Comenta | Показываются его логин и аватар на GitHub |
+| GitHub недоступен, вход владельца истёк, приложение удалено | Ответы ждут в очереди с нарастающей паузой и уходят, когда доступ вернётся; в треде на сайте они видны сразу |
+| Ответ написан, пока issue ещё создаётся | Уходит сразу после создания issue |
+| Rate limit | Опрос ждёт до сброса лимита (`resetAt`), очередь ответов тоже |
+
+В демо-сервере это сделано в `demo/github.mjs` (раздел «thread sync»): `COMENTA_GITHUB_POLL_MS` (по умолчанию 45 000) — период опроса репозитория, `COMENTA_GITHUB_REFRESH_MS` (20 000) — как часто можно перечитывать одну issue при открытии виджета. Владельцем демо считает того, у кого есть сессия настроек GitHub, а также запросы с заголовком `X-Comenta-Role: owner`, который демо-страница шлёт, когда выбран «Владимир». Это только для демо, в настоящем бэкенде владельца определяет ваша авторизация.
+
 ### Права
 
 GitHub App просит только то, что нужно: Issues и Contents на запись (issues и загрузка записей), Metadata на чтение, Organization projects на запись (Projects v2 организаций). Токен работает только в репозиториях, выбранных при установке, и только там, где права есть и у самого пользователя; список меняется ссылкой «Изменить доступ к репозиториям на GitHub» в настройках. Issues создаёт бот приложения (`<имя-приложения>[bot]`) installation-токеном, который сервер выпускает из приватного ключа; поэтому они продолжают приходить, даже когда вход владельца истёк. Без приватного ключа issues создаются от имени владельца, с отметкой приложения. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
@@ -312,7 +363,7 @@ GitHub App просит только то, что нужно: Issues и Contents
 pnpm demo:github    # тестовый GitHub на /__github: вход, репозитории, проекты, issues
 ```
 
-Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. `COMENTA_GITHUB_BOT=0 pnpm demo:github` — то же без приватного ключа (issues от имени владельца); e2e в этом режиме: `COMENTA_GITHUB_BOT=0 pnpm test:e2e`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
+Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. Действия «на GitHub» для проверки синхронизации: `curl -X POST localhost:5174/__github/issue -H 'Content-Type: application/json' -d '{"repo":"acme-studio/web-app","number":1,"comment":"Привет из GitHub"}'` (или `"close":"completed"`, `"reopen":true`, `"delete":true`). `COMENTA_GITHUB_BOT=0 pnpm demo:github` — то же без приватного ключа (issues от имени владельца); e2e в этом режиме: `COMENTA_GITHUB_BOT=0 pnpm test:e2e`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
 
 ## Разработка
 
@@ -351,4 +402,4 @@ tests/e2e     Playwright
 
 ## Дальше (вне MVP)
 
-Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: ответы в треде → комментарии issue, «Решён» → закрытие issue, issues от имени бота приложения (installation token) вместо владельца.
+Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: «Решён» → закрытие issue, вебхуки вместо опроса, колонка GitHub Project на карточке.

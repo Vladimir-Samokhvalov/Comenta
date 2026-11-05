@@ -278,6 +278,8 @@ export class Controller {
       this.popover!.close();
       this.openComment(viewing);
     }
+    // the server may show this person more (or less): e.g. GitHub comments are for the owner only
+    void this.poll();
   }
 
   private listen(target: EventTarget, type: string, fn: EventListener, opts: AddEventListenerOptions): Off {
@@ -492,10 +494,11 @@ export class Controller {
     const me = this.me();
     const item = (c: StoredComment): PanelItem => {
       const idx = page.indexOf(c);
-      const unread = this.seen.isUnread(c.payload, me);
-      if (idx === -1) return { payload: c.payload, n: null, missing: false, unread };
+      const payload = this.visible(c.payload, me);
+      const unread = this.seen.isUnread(payload, me);
+      if (idx === -1) return { payload, n: null, missing: false, unread };
       if (!c.el || !c.el.isConnected) c.el = resolveSelector(c.payload.target.selector, this.doc);
-      return { payload: c.payload, n: idx + 1, missing: !c.el, unread };
+      return { payload, n: idx + 1, missing: !c.el, unread };
     };
     const byStatus = (c: StoredComment) =>
       panel.filter === 'all' || (panel.filter === 'resolved') === (c.payload.status === 'resolved');
@@ -594,9 +597,26 @@ export class Controller {
     return !!this.adapter.setStatus && (me.role === 'owner' || sameAuthor(p.author, me));
   }
 
+  /**
+   * The comment as this viewer may see it: GitHub state and replies written on GitHub are for
+   * the site owner only. The server must strip them for everyone else; this is a second line.
+   */
+  private visible(p: FeedbackPayload, me = this.me()): FeedbackPayload {
+    if (me.role === 'owner') return p;
+    const hasState = !!p.issue && (p.issue.state !== undefined || p.issue.unavailable !== undefined);
+    if (!hasState && !p.replies?.some((r) => r.origin)) return p;
+    const out = { ...p };
+    if (hasState && out.issue) {
+      const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, ...link } = out.issue;
+      out.issue = link;
+    }
+    if (out.replies) out.replies = out.replies.filter((r) => !r.origin);
+    return out;
+  }
+
   private threadModel(c: StoredComment): ThreadModel {
     return {
-      payload: c.payload,
+      payload: this.visible(c.payload),
       n: this.pageComments().indexOf(c) + 1,
       me: this.me(),
       canResolve: this.canResolve(c.payload),
@@ -679,7 +699,7 @@ export class Controller {
 
   private unreadCount(): number {
     const me = this.me();
-    return this.comments.filter((c) => this.seen.isUnread(c.payload, me)).length;
+    return this.comments.filter((c) => this.seen.isUnread(this.visible(c.payload, me), me)).length;
   }
 
   private refreshUnread() {
@@ -878,7 +898,7 @@ export class Controller {
         c.pin = pin;
       }
       const resolved = c.payload.status === 'resolved';
-      const unread = this.seen.isUnread(c.payload, this.me());
+      const unread = this.seen.isUnread(this.visible(c.payload), this.me());
       c.pin.textContent = resolved ? '✓' : String(n);
       c.pin.toggleAttribute('data-resolved', resolved);
       c.pin.toggleAttribute('data-unread', unread);

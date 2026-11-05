@@ -10,8 +10,13 @@
 //   GET  /__github/state                     what was created (issues, files, project items)
 //   POST /__github/control                   { revoke, rateLimit, failNext, repos, projects, scopes, delayMs,
 //                                              installed, selected, expiresIn }
+//   POST /__github/issue                     act on an issue as someone on GitHub:
+//                                              { repo, number, close: 'completed'|'not_planned' } | { …, reopen: true }
+//                                              { repo, number, comment: 'text', login? } → { id }
+//                                              { editComment: id, body } | { deleteComment: id }
+//                                              { repo, number, delete: true } | { repo, number, transfer: 'owner/name' }
 //   POST /__github/reset
-import { createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 
 const AVATAR = '/__github/avatar.svg';
 /** The fake app. Its private key mints installation tokens (ghs_, issues authored by comenta-mock[bot]). */
@@ -62,7 +67,10 @@ function initialState() {
     },
     tokens: new Map(), // token → { scopes, revoked }
     codes: new Map(), // code → what the app may do
-    issues: [], // { repo, number, title, body, node_id, html_url }
+    issues: [], // { repo, number, title, body, node_id, html_url, state, state_reason, … }
+    comments: [], // { id, repo, number, body, user, created_at, updated_at }
+    nextCommentId: 9001,
+    notModified: 0, // conditional GETs answered with 304
     files: new Map(), // `${repo}@${branch}:${path}` → { size }
     branches: new Map(), // repo → Set
     projectItems: [], // { projectId, contentId }
@@ -127,6 +135,49 @@ export function createGitHubMock(base) {
     const rec = s.tokens.get(t);
     if (rec?.installation && !s.installed) return null; // the app was removed
     return rec && !rec.revoked ? rec : null;
+  };
+
+  /** Strictly increasing timestamps: `since` filters stay exact even within one millisecond. */
+  let lastTick = 0;
+  const tick = () => {
+    lastTick = Math.max(Date.now(), lastTick + 1);
+    return new Date(lastTick).toISOString();
+  };
+  const touch = (repo, number) => {
+    const i = s.issues.find((x) => x.repo === repo && x.number === number);
+    if (i) i.updated_at = tick();
+  };
+  const userJson = (login) => ({ login, avatar_url: `${base}/avatar.svg`, html_url: `${base}/web/${login}`, type: login.endsWith('[bot]') ? 'Bot' : 'User' });
+  const issueJson = (i) => ({
+    number: i.number,
+    title: i.title,
+    body: i.body,
+    node_id: i.node_id,
+    html_url: i.html_url,
+    state: i.state,
+    state_reason: i.state_reason,
+    closed_at: i.closed_at,
+    created_at: i.created_at,
+    updated_at: i.updated_at,
+    comments: s.comments.filter((c) => c.repo === i.repo && c.number === i.number).length,
+    user: userJson(i.author),
+    repository_url: `${base}/api/repos/${i.transferredTo ?? i.repo}`,
+  });
+  const commentJson = (c) => ({
+    id: c.id,
+    body: c.body,
+    html_url: `${base}/web/${c.repo}/issues/${c.number}#issuecomment-${c.id}`,
+    issue_url: `${base}/api/repos/${c.repo}/issues/${c.number}`,
+    created_at: c.created_at,
+    updated_at: c.updated_at,
+    user: userJson(c.login),
+  });
+  const addComment = (issue, body, login) => {
+    const at = tick();
+    const c = { id: s.nextCommentId++, repo: issue.repo, number: issue.number, body, login, created_at: at, updated_at: at };
+    s.comments.push(c);
+    issue.updated_at = at;
+    return c;
   };
 
   async function api(req, res, path, url) {
@@ -207,9 +258,81 @@ export function createGitHubMock(base) {
       const body = await readBody(req);
       if (!body.title) return send(422, { message: 'Validation Failed' });
       const number = s.issues.filter((i) => i.repo === `${r.owner}/${r.name}`).length + 1;
-      const issue = { repo: `${r.owner}/${r.name}`, number, title: body.title, body: body.body ?? '', node_id: `I_mock_${r.name}_${number}`, html_url: `${base}/web/${r.owner}/${r.name}/issues/${number}`, author: tok.installation ? `${MOCK_APP.slug}[bot]` : s.user.login };
+      const now = new Date().toISOString();
+      const issue = { repo: `${r.owner}/${r.name}`, number, title: body.title, body: body.body ?? '', node_id: `I_mock_${r.name}_${number}`, html_url: `${base}/web/${r.owner}/${r.name}/issues/${number}`, author: tok.installation ? `${MOCK_APP.slug}[bot]` : s.user.login, state: 'open', state_reason: null, closed_at: null, created_at: now, updated_at: now };
       s.issues.push(issue);
       return send(201, issue);
+    }
+    // ---- issue state and comments (conditional GETs: ETag / If-None-Match → 304)
+    const cached = (data, extra = {}) => {
+      const etag = `W/"${createHash('sha1').update(JSON.stringify(data)).digest('hex')}"`;
+      if (req.headers['if-none-match'] === etag) {
+        s.notModified++;
+        return res.writeHead(304, { ETag: etag, ...scopeHeaders }).end();
+      }
+      return send(200, data, { ETag: etag, ...extra });
+    };
+    const readable = (repo) => {
+      const [o, n] = repo.split('/');
+      const r = findRepo(o, n);
+      return r && visible(tok, r);
+    };
+    const page = (list) => {
+      const per = Math.min(100, Number(url.searchParams.get('per_page') ?? 30));
+      const pg = Number(url.searchParams.get('page') ?? 1);
+      const next = new URL(url);
+      next.searchParams.set('page', String(pg + 1));
+      return { items: list.slice((pg - 1) * per, pg * per), extra: pg * per < list.length ? { Link: `<${base}/api${path}?${next.searchParams}>; rel="next"` } : {} };
+    };
+    if ((m = /^\/repos\/([^/]+)\/([^/]+)\/issues\/comments$/.exec(path)) && req.method === 'GET') {
+      const repo = `${m[1]}/${m[2]}`;
+      if (!readable(repo)) return send(404, { message: 'Not Found' });
+      const since = url.searchParams.get('since') ?? '';
+      const list = s.comments.filter((c) => c.repo === repo && c.updated_at >= since).sort((a, b) => a.updated_at.localeCompare(b.updated_at)).map(commentJson);
+      const { items, extra } = page(list);
+      return cached(items, extra);
+    }
+    if ((m = /^\/repos\/([^/]+)\/([^/]+)\/issues\/comments\/(\d+)$/.exec(path))) {
+      const c = s.comments.find((x) => x.id === Number(m[3]) && x.repo === `${m[1]}/${m[2]}`);
+      if (!c) return send(404, { message: 'Not Found' });
+      if (req.method === 'GET') return send(200, commentJson(c));
+      if (req.method === 'PATCH') {
+        const { body } = await readBody(req);
+        c.body = String(body ?? '');
+        c.updated_at = tick();
+        touch(c.repo, c.number);
+        return send(200, commentJson(c));
+      }
+      if (req.method === 'DELETE') {
+        s.comments = s.comments.filter((x) => x !== c);
+        touch(c.repo, c.number);
+        return res.writeHead(204, scopeHeaders).end();
+      }
+    }
+    if ((m = /^\/repos\/([^/]+)\/([^/]+)\/issues$/.exec(path)) && req.method === 'GET') {
+      const repo = `${m[1]}/${m[2]}`;
+      if (!readable(repo)) return send(404, { message: 'Not Found' });
+      const since = url.searchParams.get('since') ?? '';
+      const list = s.issues.filter((i) => i.repo === repo && !i.deleted && i.updated_at >= since).sort((a, b) => a.updated_at.localeCompare(b.updated_at)).map(issueJson);
+      const { items, extra } = page(list);
+      return cached(items, extra);
+    }
+    if ((m = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)(\/comments)?$/.exec(path))) {
+      const repo = `${m[1]}/${m[2]}`;
+      const issue = s.issues.find((i) => i.repo === repo && i.number === Number(m[3]));
+      if (!issue || !readable(repo)) return send(404, { message: 'Not Found' });
+      if (issue.deleted) return send(410, { message: 'This issue was deleted' });
+      if (!m[4] && req.method === 'GET') return cached(issueJson(issue)); // after a transfer GitHub redirects; the JSON names the new repository
+      if (m[4] && req.method === 'GET') {
+        const { items, extra } = page(s.comments.filter((c) => c.repo === repo && c.number === issue.number).map(commentJson));
+        return cached(items, extra);
+      }
+      if (m[4] && req.method === 'POST') {
+        const { body } = await readBody(req);
+        if (!body) return send(422, { message: 'Validation Failed' });
+        const c = addComment(issue, String(body), tok.installation ? `${MOCK_APP.slug}[bot]` : s.user.login);
+        return send(201, commentJson(c));
+      }
     }
     if ((m = /^\/repos\/([^/]+)\/([^/]+)\/git\/ref\/heads\/(.+)$/.exec(path)) && req.method === 'GET') {
       const has = s.branches.get(`${m[1]}/${m[2]}`)?.has(decodeURIComponent(m[3]));
@@ -346,7 +469,7 @@ export function createGitHubMock(base) {
       return true;
     }
     if (path === '/state' && req.method === 'GET') {
-      json(res, 200, { issues: s.issues, files: [...s.files.keys()], branches: Object.fromEntries([...s.branches].map(([k, v]) => [k, [...v]])), projectItems: s.projectItems, calls: s.calls, refreshes: s.refreshes, installationTokens: s.installationTokens, revoked: [...s.tokens.values()].filter((t) => t.revoked && !t.refreshed).length });
+      json(res, 200, { issues: s.issues, comments: s.comments, notModified: s.notModified, files: [...s.files.keys()], branches: Object.fromEntries([...s.branches].map(([k, v]) => [k, [...v]])), projectItems: s.projectItems, calls: s.calls, refreshes: s.refreshes, installationTokens: s.installationTokens, revoked: [...s.tokens.values()].filter((t) => t.revoked && !t.refreshed).length });
       return true;
     }
     if (path === '/control' && req.method === 'POST') {
@@ -363,6 +486,28 @@ export function createGitHubMock(base) {
       if ('expiresIn' in c) s.expiresIn = Number(c.expiresIn);
       if ('scopes' in c) s.grantScopes = c.scopes ? String(c.scopes).split(/[\s,]+/).filter(Boolean) : undefined;
       json(res, 200, { ok: true });
+      return true;
+    }
+    if (path === '/issue' && req.method === 'POST') {
+      const a = await readBody(req);
+      if (a.editComment || a.deleteComment) {
+        const c = s.comments.find((x) => x.id === Number(a.editComment ?? a.deleteComment));
+        if (!c) return json(res, 404, { message: 'no such comment' }), true;
+        if (a.deleteComment) s.comments = s.comments.filter((x) => x !== c);
+        else (c.body = String(a.body ?? ''), (c.updated_at = tick()));
+        touch(c.repo, c.number);
+        json(res, 200, { ok: true });
+        return true;
+      }
+      const issue = s.issues.find((i) => i.repo === a.repo && i.number === Number(a.number));
+      if (!issue) return json(res, 404, { message: 'no such issue' }), true;
+      let out = { ok: true };
+      if (a.close) Object.assign(issue, { state: 'closed', state_reason: a.close === true ? 'completed' : a.close, closed_at: new Date().toISOString(), updated_at: tick() });
+      if (a.reopen) Object.assign(issue, { state: 'open', state_reason: 'reopened', closed_at: null, updated_at: tick() });
+      if (a.comment) out = { id: addComment(issue, String(a.comment), a.login ?? 'octo-dev').id };
+      if (a.delete) issue.deleted = true;
+      if (a.transfer) issue.transferredTo = a.transfer;
+      json(res, 200, out);
       return true;
     }
     if (path === '/reset' && req.method === 'POST') {

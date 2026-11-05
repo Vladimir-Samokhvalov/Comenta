@@ -76,4 +76,13 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   unread: (n) => `${n} ${plural(n, 'тред', 'треда', 'тредов')} с новыми ответами`,
   replies: (n) => `${n} ${plural(n, 'ответ', 'ответа', 'ответов')}`,
   issueLink: (i) => `${i.provider === 'github' ? 'GitHub' : i.provider} #${i.number}`,
+  issueState: (i) => (i.state === 'closed' ? 'закрыт' : 'открыт'),
+  issueStateLong: (i) => {
+    if (i.state !== 'closed') return 'открыт';
+    const why: Record<string, string> = { completed: 'выполнен', not_planned: 'не будет сделан', duplicate: 'дубликат' };
+    const r = i.stateReason ? why[i.stateReason] : undefined;
+    return r ? `закрыт · ${r}` : 'закрыт';
+  },
+  issueUnavailable: 'Issue недоступен',
+  fromGitHub: 'из GitHub',
 };

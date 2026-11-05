@@ -21,6 +21,11 @@
 // token minted from the private key), so they keep arriving after the owner's sign-in expires; access ends
 // when the owner removes the app or the repository from it on GitHub. Without a private key the owner's
 // user token is used (same repositories, refreshed when it expires, issues authored by the owner).
+//
+// Thread sync (see "thread sync" below): issue state and comments written on GitHub are polled
+// (COMENTA_GITHUB_POLL_MS, default 45 s, plus a per-issue refresh when the owner opens the widget,
+// throttled by COMENTA_GITHUB_REFRESH_MS) with ETags, and replies written in Comenta are posted to the
+// issue as comments signed with the author's name. Only the site owner is shown GitHub state and comments.
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -41,13 +46,23 @@ import {
   refreshAccessToken,
   revokeGrant,
   syncComment,
+  applyIssueState,
+  deleteReplyComment,
+  fetchIssue,
+  fetchIssueComments,
+  fetchRepoActivity,
+  findReplyComment,
+  forViewer,
+  mergeIssueComments,
+  postReply,
+  updateReplyComment,
 } from '../dist/github.js';
 
 const SESSION_COOKIE = 'comenta_sid';
 const STATE_COOKIE = 'comenta_oauth';
 const REQUIRED = { project: 'project', repo: 'repo' };
 
-export function createGitHubIntegration({ root, persistComments, findComment, uploadsDir, log = console.log }) {
+export function createGitHubIntegration({ root, persistComments, findComment, listComments = () => [], uploadsDir, log = console.log }) {
   const env = process.env;
   const apiUrl = env.GITHUB_API_URL ?? 'https://api.github.com';
   const webUrl = env.GITHUB_WEB_URL ?? 'https://github.com';
@@ -206,7 +221,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
       account: integ.account,
       config: integ.config ?? null,
       missingScopes: missingScopes(integ),
-      sync: { pending, ...(integ.lastError ? { lastError: integ.lastError } : {}) },
+      sync: { pending, replies: Object.keys(integ.threads?.replies ?? {}).length, ...(integ.lastError ? { lastError: integ.lastError } : {}) },
     };
   }
 
@@ -250,13 +265,16 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
       // the same person signing in again keeps the chosen repository and queued comments
       config: sameOwner ? prev.config : undefined,
       pending: sameOwner ? prev.pending ?? {} : {},
+      // sync cursors and queued replies survive a re-login of the same owner
+      threads: sameOwner ? prev.threads : undefined,
     };
     repoCache.delete(space);
     save();
     log(`[github] подключён @${acc.login} (${tokenType}) в пространстве ${space}`);
     void resolveInstallation(db.spaces[space])
       .catch(() => {})
-      .then(() => drain(space, true));
+      .then(() => drain(space, true))
+      .then(() => drainReplies(space, true));
     return acc.login;
   }
 
@@ -324,6 +342,9 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         integ.lastError = res.projectError ? { code: 'project', message: `Issue создан, но не добавлен в проект: ${res.projectError}`, at: new Date().toISOString() } : undefined;
         save();
         log(`[github] ${payload.id.slice(0, 8)} → ${res.url}${res.existed ? ' (уже был)' : ''}${res.projectError ? ` (проект: ${res.projectError})` : ''}`);
+        // replies written while the issue was being created go out now
+        for (const r of payload.replies ?? []) if (!r.origin && !r.link) enqueueReply(space, payload.id, r.id, 'create');
+        void drainReplies(space, true);
         return payload.issue;
       } catch (err) {
         const e = err instanceof GitHubError ? err : new GitHubError('network', String(err?.message ?? err));
@@ -369,9 +390,273 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     save();
   }
   const timer = setInterval(() => {
-    for (const space of Object.keys(db.spaces)) void drain(space);
+    for (const space of Object.keys(db.spaces)) void drain(space).then(() => drainReplies(space));
   }, Number(env.COMENTA_GITHUB_DRAIN_MS ?? 30_000));
   timer.unref?.();
+
+  // ------------------------------------------------------------------ thread sync
+  //
+  // GitHub → Comenta: every POLL_MS one conditional request for issues and one for comments of the
+  // chosen repository (both 304 when nothing changed); a per-issue refresh when the owner opens the
+  // widget also catches deletions, deleted / transferred issues and backfills old cards.
+  // Comenta → GitHub: a queue of reply operations (create / edit / delete) per space, retried with
+  // backoff while GitHub or the token is unavailable. Comments Comenta posted carry a hidden marker,
+  // so polling never imports them back. A webhook handler (`issues`, `issue_comment` events) can call
+  // applyIssueState / mergeIssueComments the same way and make polling rarer.
+
+  const pollMs = Number(env.COMENTA_GITHUB_POLL_MS ?? 45_000);
+  const refreshMs = Number(env.COMENTA_GITHUB_REFRESH_MS ?? 20_000);
+  const inflightIssue = new Map(); // `${space}:${repo}#${n}` → Promise
+  const inflightReply = new Map(); // `${space}:${commentId}:${replyId}` → Promise
+
+  /** { repo, cursor, issues: { [repo#n]: { etag, commentsEtag, at, full } }, replies: { [key]: op }, pausedUntil } */
+  const threads = (integ) => {
+    integ.threads ??= {};
+    integ.threads.issues ??= {};
+    integ.threads.replies ??= {};
+    return integ.threads;
+  };
+  const issueKey = (i) => `${i.repo.toLowerCase()}#${i.number}`;
+  const paused = (integ) => (integ.threads?.pausedUntil ?? 0) > Date.now();
+
+  /** Run with the bot's installation token when there is one, otherwise with the owner's token. */
+  async function withGitHub(integ, fn) {
+    const bot = botInstallation(integ);
+    if (!bot) return fn(client(integ));
+    try {
+      return await fn(botClient(bot));
+    } catch (err) {
+      if (!(err instanceof GitHubError) || !['unauthorized', 'uninstalled'].includes(err.code)) throw err;
+      appAuth.forget(bot);
+      if (err.code === 'uninstalled') await resolveInstallation(integ).catch(() => {});
+      const next = botInstallation(integ);
+      if (!next) throw err;
+      return fn(botClient(next));
+    }
+  }
+
+  /** A read failed: wait out rate limits, mark a dead owner token. */
+  function readFailed(integ, err, what) {
+    const e = err instanceof GitHubError ? err : new GitHubError('network', String(err?.message ?? err));
+    if (e.code === 'rate_limited') threads(integ).pausedUntil = e.resetAt ?? Date.now() + 60_000;
+    if (e.code === 'unauthorized' && !botInstallation(integ)) markExpired(integ);
+    save();
+    log(`[github] ${what}: ${e.code} — ${e.message}`);
+  }
+
+  /** Repository-wide poll: issue states and new / edited comments since the last cursor. */
+  async function pollSpace(space) {
+    const integ = db.spaces[space];
+    if (!canSync(integ) || paused(integ)) return;
+    const { owner, name, fullName } = integ.config.repo;
+    const tracked = listComments(space).filter((c) => c.issue?.provider === 'github' && c.issue.repo.toLowerCase() === fullName.toLowerCase());
+    if (!tracked.length) return;
+    const t = threads(integ);
+    if (t.repo !== fullName || !t.cursor) {
+      // start from the oldest tracked comment; later polls only ask for what changed
+      const from = tracked.reduce((m, c) => (c.createdAt < m ? c.createdAt : m), new Date().toISOString());
+      t.repo = fullName;
+      t.cursor = { issues: from, comments: from };
+    }
+    try {
+      const act = await withGitHub(integ, (gh) => fetchRepoActivity(gh, { owner, repo: name }, t.cursor));
+      t.cursor = act.cursor;
+      const byNumber = new Map(tracked.map((c) => [c.issue.number, c]));
+      let changed = false;
+      for (const st of act.issues ?? []) {
+        const c = byNumber.get(st.number);
+        if (c && applyIssueState(c.issue, st)) changed = true;
+      }
+      const groups = new Map();
+      for (const gc of act.comments ?? []) {
+        if (!groups.has(gc.issueNumber)) groups.set(gc.issueNumber, []);
+        groups.get(gc.issueNumber).push(gc);
+      }
+      for (const [n, list] of groups) {
+        const c = byNumber.get(n);
+        if (!c) continue;
+        const m = mergeIssueComments(c, list);
+        if (m.changed) {
+          c.replies = m.replies;
+          changed = true;
+        }
+      }
+      if (changed) persistComments();
+      save();
+    } catch (err) {
+      readFailed(integ, err, `опрос ${fullName}`);
+    }
+  }
+
+  /** One issue in full: state, every comment (finds deletions), 404/410/transfer. Throttled unless `force`. */
+  function refreshIssue(space, c, force = false) {
+    const integ = db.spaces[space];
+    if (c.issue?.provider !== 'github' || !canSync(integ) || paused(integ)) return Promise.resolve(false);
+    const t = threads(integ);
+    const key = issueKey(c.issue);
+    const rec = (t.issues[key] ??= {});
+    if (!force && rec.at && Date.now() - rec.at < refreshMs) return Promise.resolve(false);
+    const lock = `${space}:${key}`;
+    if (inflightIssue.has(lock)) return inflightIssue.get(lock);
+    const run = (async () => {
+      rec.at = Date.now();
+      try {
+        let changed = false;
+        const res = await withGitHub(integ, (gh) => fetchIssue(gh, c.issue, rec.etag));
+        if (res.kind === 'unavailable') {
+          delete rec.etag;
+          delete rec.commentsEtag;
+          changed = applyIssueState(c.issue, { unavailable: res.reason });
+        } else {
+          if (res.kind === 'ok') {
+            rec.etag = res.etag;
+            changed = applyIssueState(c.issue, res.issue);
+          }
+          const cs = await withGitHub(integ, (gh) => fetchIssueComments(gh, c.issue, rec.commentsEtag));
+          if (cs.kind === 'ok') {
+            rec.commentsEtag = cs.etag;
+            const m = mergeIssueComments(c, cs.comments, { complete: cs.complete });
+            if (m.changed) {
+              c.replies = m.replies;
+              changed = true;
+            }
+          }
+          if (!rec.full) {
+            // first full look at this card: replies written before the sync existed go to GitHub
+            rec.full = true;
+            for (const r of c.replies ?? []) if (!r.origin && !r.link) enqueueReply(space, c.id, r.id, 'create', { checkExisting: true });
+            void drainReplies(space, true);
+          }
+        }
+        if (changed) persistComments();
+        save();
+        return changed;
+      } catch (err) {
+        readFailed(integ, err, `issue ${c.issue.repo}#${c.issue.number}`);
+        return false;
+      }
+    })().finally(() => inflightIssue.delete(lock));
+    inflightIssue.set(lock, run);
+    return run;
+  }
+
+  /**
+   * The owner opened the widget (or it polled): refresh the shown cards' issues, newest first.
+   * Waits up to `waitMs`, the rest finishes in the background and shows up on the next poll.
+   */
+  async function refreshComments(space, comments, waitMs = 1500) {
+    const integ = db.spaces[space];
+    if (!canSync(integ) || paused(integ)) return;
+    const list = comments.filter((c) => c.issue?.provider === 'github').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 25);
+    if (!list.length) return;
+    const all = (async () => {
+      for (const c of list) await refreshIssue(space, c);
+    })();
+    await Promise.race([all, new Promise((r) => setTimeout(r, waitMs))]);
+  }
+
+  /** Remember what has to happen to a reply on GitHub. A newer operation replaces an older one. */
+  function enqueueReply(space, commentId, replyId, op, extra = {}) {
+    const integ = db.spaces[space];
+    if (!integ?.config || integ.disconnected) return;
+    const t = threads(integ);
+    const key = `${commentId}:${replyId}`;
+    const prev = t.replies[key];
+    // a create that hasn't run yet already sends the latest text
+    if (op === 'edit' && prev && prev.op === 'create') return;
+    if (op === 'create' && prev) return;
+    t.replies[key] = { commentId, replyId, op, attempts: 0, nextAt: 0, ...extra };
+    save();
+  }
+
+  function processReply(space, key) {
+    const lock = `${space}:${key}`;
+    if (inflightReply.has(lock)) return inflightReply.get(lock);
+    const run = (async () => {
+      const integ = db.spaces[space];
+      const op = integ?.threads?.replies?.[key];
+      if (!op) return;
+      const t = integ.threads;
+      const c = findComment(space, op.commentId);
+      const reply = c?.replies?.find((r) => r.id === op.replyId);
+      const issue = c?.issue ?? op.issue;
+      const done = () => {
+        if (t.replies[key] === op) delete t.replies[key];
+        save();
+      };
+      if (op.op !== 'delete' && (!reply || reply.origin)) return done(); // deleted meanwhile
+      if (!issue) return; // waits for the issue to be created
+      if (issue.unavailable) return done(); // nowhere to post
+      if (!canSync(integ)) return;
+      const guestName = 'Гость';
+      try {
+        await withGitHub(integ, async (gh) => {
+          if (op.op === 'delete') {
+            const link = op.link ?? (await findReplyComment(gh, issue, op.replyId));
+            if (link) await deleteReplyComment(gh, issue, link);
+          } else if (reply.link) {
+            if (op.op === 'edit') await updateReplyComment(gh, issue, reply.link, reply, guestName);
+          } else {
+            const files = await filesFromDisk(reply);
+            const link = await postReply(gh, issue, reply, files, { checkExisting: op.attempts > 0 || !!op.checkExisting, guestName });
+            reply.link = { provider: 'github', id: link.id, url: link.url };
+            persistComments();
+          }
+        });
+        log(`[github] ответ ${op.replyId.slice(0, 8)}: ${op.op} → ${issue.repo}#${issue.number}`);
+        done();
+      } catch (err) {
+        const e = err instanceof GitHubError ? err : new GitHubError('network', String(err?.message ?? err));
+        if (e.code === 'unauthorized' && !botInstallation(integ)) markExpired(integ);
+        if (t.replies[key] === op) {
+          op.attempts++;
+          op.nextAt = Date.now() + Math.min(30, 2 ** (op.attempts - 1)) * backoffMs;
+          if (e.code === 'rate_limited' && e.resetAt) op.nextAt = Math.max(op.nextAt, e.resetAt);
+          if (!e.retryable) op.nextAt = Number.MAX_SAFE_INTEGER; // waits for re-login / new settings
+          op.error = e.message;
+        }
+        save();
+        log(`[github] ответ ${op.replyId.slice(0, 8)}: ${e.code} — ${e.message} (повторим позже)`);
+      }
+    })()
+      .catch((err) => console.error(err))
+      .finally(() => inflightReply.delete(lock));
+    inflightReply.set(lock, run);
+    return run;
+  }
+
+  /** Send queued reply operations (`force`: ignore backoff). */
+  async function drainReplies(space, force = false) {
+    const integ = db.spaces[space];
+    if (!integ?.threads?.replies || !canSync(integ)) return;
+    for (const [key, op] of Object.entries(integ.threads.replies)) {
+      if (!force && op.nextAt > Date.now()) continue;
+      await processReply(space, key);
+      if (!canSync(db.spaces[space])) break;
+    }
+  }
+
+  // hooks for the feedback routes
+  function onReply(space, comment, reply) {
+    if (reply.origin) return;
+    enqueueReply(space, comment.id, reply.id, 'create');
+    void processReply(space, `${comment.id}:${reply.id}`);
+  }
+  function onReplyEdit(space, comment, reply) {
+    if (reply.origin) return;
+    enqueueReply(space, comment.id, reply.id, 'edit');
+    void processReply(space, `${comment.id}:${reply.id}`);
+  }
+  function onReplyDelete(space, comment, reply) {
+    if (reply.origin) return;
+    enqueueReply(space, comment.id, reply.id, 'delete', { link: reply.link, issue: comment.issue });
+    void processReply(space, `${comment.id}:${reply.id}`);
+  }
+
+  const pollTimer = setInterval(() => {
+    for (const space of Object.keys(db.spaces)) void pollSpace(space);
+  }, pollMs);
+  pollTimer.unref?.();
 
   // ------------------------------------------------------------------ routes
 
@@ -519,7 +804,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         delete integ.lastError;
         save();
         log(`[github] настройки: ${repo.fullName}${project ? ` → проект «${project.title}»` : ''}`);
-        void drain(space, true);
+        void drain(space, true).then(() => drainReplies(space, true));
         return void json(res, 200, { config: integ.config });
       }
 
@@ -530,5 +815,23 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     }
   }
 
-  return { oauth, bot: !!appAuth, handle, onComment, drain, status: (space) => db.spaces[space], close: () => clearInterval(timer) };
+  return {
+    oauth,
+    bot: !!appAuth,
+    handle,
+    onComment,
+    onReply,
+    onReplyEdit,
+    onReplyDelete,
+    drain,
+    drainReplies,
+    pollSpace,
+    refreshComments,
+    /** The request comes from the signed-in site owner (GitHub session of this space). */
+    isOwner: (req, space) => !!session(req, space),
+    /** Strip GitHub state and comments for everyone but the owner. */
+    forViewer: (list, isOwner) => list.map((c) => forViewer(c, isOwner)),
+    status: (space) => db.spaces[space],
+    close: () => (clearInterval(timer), clearInterval(pollTimer)),
+  };
 }

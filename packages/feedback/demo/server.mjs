@@ -10,6 +10,7 @@
 //   multipart POST (payload + recordings) → files saved to demo/uploads/, answers { attachments: { id: url } }
 //   /api/github/*                               → GitHub integration (demo/github.mjs, used by <comenta-settings>)
 //   GITHUB_MOCK=1                               → fake GitHub at /__github (demo/github-mock.mjs), no account needed
+//   Replies are mirrored to the linked issue; GitHub state and comments come back for the owner only.
 // The demo does not check permissions (who may resolve, edit, delete): a real backend must.
 // Header X-Comenta-Space (or cookie comenta_space) keeps separate stores (the e2e tests use one per test).
 import { createServer } from 'node:http';
@@ -63,7 +64,14 @@ const github = createGitHubIntegration({
   uploadsDir: UPLOADS,
   persistComments: () => persist(),
   findComment: (space, id) => store.get(space)?.find((c) => c.id === id) ?? null,
+  listComments: (space) => store.get(space) ?? [],
 });
+/**
+ * GitHub state and comments written on GitHub are shown to the site owner only. Here the owner is
+ * whoever has the GitHub settings session, or (demo only, the page has a user switcher and no login)
+ * a request with `X-Comenta-Role: owner`. A real backend takes it from its own authentication.
+ */
+const isOwner = (req) => github.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
 const listOf = (req) => {
   const k = spaceOf(req);
   if (!store.has(k)) store.set(k, []);
@@ -166,7 +174,11 @@ const server = createServer(async (req, res) => {
       if (req.method === 'GET') {
         const page = url.searchParams.get('url');
         const list = listOf(req);
-        json(res, 200, page ? list.filter((c) => sameUrl(c.page?.url, page)) : list);
+        const items = page ? list.filter((c) => sameUrl(c.page?.url, page)) : list;
+        const owner = isOwner(req);
+        // the owner opened the widget / it polled: pull fresh issue state and comments (throttled)
+        if (owner) await github.refreshComments(spaceOf(req), items);
+        json(res, 200, github.forViewer(items, owner));
         return;
       }
       res.writeHead(405).end();
@@ -197,8 +209,12 @@ const server = createServer(async (req, res) => {
         const { item: reply, urls } = await readItem(req);
         if (!reply?.id || (!reply.text && !reply.attachments?.length)) return void json(res, 400, { error: 'invalid reply' });
         comment.replies ??= [];
-        if (!comment.replies.some((r) => r.id === reply.id)) comment.replies.push({ ...reply, commentId: id });
+        delete reply.origin; // set by the server only
+        delete reply.link;
+        const known = comment.replies.find((r) => r.id === reply.id);
+        if (!known) comment.replies.push({ ...reply, commentId: id });
         persist();
+        if (!known) github.onReply(spaceOf(req), comment, comment.replies.at(-1)); // → issue comment
         console.log(`[feedback] ответ ${reply.author?.name ?? '?'} → ${id}: "${reply.text}"`);
         return void json(res, 201, { ok: true, attachments: urls });
       }
@@ -207,14 +223,18 @@ const server = createServer(async (req, res) => {
         if (!reply) return void json(res, 404, { error: 'not found' });
         if (req.method === 'PATCH') {
           const patch = JSON.parse((await readBody(req)).toString('utf8'));
+          if (reply.origin) return void json(res, 403, { error: 'written on GitHub' });
           reply.text = String(patch.text ?? reply.text);
           reply.updatedAt = patch.updatedAt ?? new Date().toISOString();
           persist();
+          github.onReplyEdit(spaceOf(req), comment, reply);
           return void json(res, 200, { ok: true });
         }
         if (req.method === 'DELETE') {
+          if (reply.origin) return void json(res, 403, { error: 'written on GitHub' });
           comment.replies = comment.replies.filter((r) => r.id !== replyId);
           persist();
+          github.onReplyDelete(spaceOf(req), comment, reply);
           return void json(res, 200, { ok: true });
         }
       }
