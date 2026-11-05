@@ -18,7 +18,9 @@ export type GitHubErrorCode =
   /** No connection, timeout or 5xx after retries. */
   | 'network'
   /** The integration is not configured (no token or no repository). */
-  | 'not_configured';
+  | 'not_configured'
+  /** The GitHub App was removed from the account / repository (or suspended). */
+  | 'uninstalled';
 
 export class GitHubError extends Error {
   readonly code: GitHubErrorCode;
@@ -64,6 +66,7 @@ export const MESSAGES = {
   notFound: 'Не найдено в GitHub (или нет доступа).',
   network: 'GitHub не отвечает. Попробуйте ещё раз чуть позже.',
   notConfigured: 'Интеграция с GitHub не настроена.',
+  uninstalled: 'Приложение Comenta удалено из GitHub или у него больше нет доступа к репозиторию. Установите его снова в настройках.',
   validation: 'GitHub отклонил запрос.',
 } as const;
 

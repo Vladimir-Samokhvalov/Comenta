@@ -16,6 +16,8 @@ export interface GitHubRepo {
   htmlUrl: string;
   defaultBranch: string;
   pushedAt: string | null;
+  /** GitHub App installation that grants access (set by `listInstallationRepos`). */
+  installationId?: number;
 }
 
 export interface GitHubProject {
@@ -62,6 +64,31 @@ function toRepo(r: RawRepo): GitHubRepo {
 export async function listRepos(client: GitHubClient, opts: { maxPages?: number } = {}): Promise<GitHubRepo[]> {
   const raw = await client.paginate<RawRepo>('/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member', opts.maxPages ?? 10);
   return raw.filter((r) => !r.archived).map(toRepo).filter((r) => r.canPush);
+}
+
+/**
+ * Same list for a GitHub App user token: only repositories chosen when the app was installed,
+ * across all its installations (personal account, organisations), that this user may write to.
+ */
+export async function listInstallationRepos(client: GitHubClient, opts: { maxPages?: number } = {}): Promise<GitHubRepo[]> {
+  const maxPages = opts.maxPages ?? 10;
+  const installations = await client.paginate<{ id: number }>('/user/installations?per_page=100', maxPages, 'installations');
+  const lists = await Promise.all(
+    installations.map(async (i) =>
+      (await client.paginate<RawRepo>(`/user/installations/${i.id}/repositories?per_page=100`, maxPages, 'repositories')).map((r) => ({ raw: r, installationId: i.id })),
+    ),
+  );
+  return lists
+    .flat()
+    .filter(({ raw }) => !raw.archived)
+    .map(({ raw, installationId }) => ({ ...toRepo(raw), installationId }))
+    .filter((r) => r.canPush)
+    .sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
+}
+
+/** How many installations of the app this user can see; 0 means the app still has to be installed. */
+export async function countInstallations(client: GitHubClient): Promise<number> {
+  return (await client.get<{ total_count: number }>('/user/installations?per_page=1')).total_count;
 }
 
 /** One repository with the token's permissions. Throws a clear error when issues can't be created there. */

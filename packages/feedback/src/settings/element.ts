@@ -9,6 +9,7 @@ import { SETTINGS_STYLES } from './styles';
  *
  *   GET  {endpoint}/status              → SettingsStatus
  *   GET  {endpoint}/auth/login?return=  → redirect to GitHub (page navigation)
+ *   GET  {endpoint}/auth/install?return= → redirect to the GitHub App's install page (status.app only)
  *   POST {endpoint}/auth/token          { token } — personal access token (local development)
  *   POST {endpoint}/auth/logout
  *   GET  {endpoint}/repos               → { items: SettingsRepo[] }
@@ -47,7 +48,7 @@ export interface SettingsConfig {
   project?: SettingsProject | null;
 }
 export interface SettingsStatus {
-  /** OAuth App is configured on the server (GITHUB_CLIENT_ID / SECRET). */
+  /** A GitHub App is configured on the server, so "Sign in with GitHub" works. */
   oauth: boolean;
   /** The server accepts a personal access token. */
   pat: boolean;
@@ -56,6 +57,12 @@ export interface SettingsStatus {
   reason?: 'expired';
   account?: SettingsAccount;
   config?: SettingsConfig | null;
+  /** Connected through the GitHub App: repository access is managed on GitHub. */
+  app?: boolean;
+  /** Issues are created by the app's bot (installation token), not under the owner's account. */
+  bot?: boolean;
+  /** Signed out, but the bot still turns comments into issues. */
+  syncing?: boolean;
   /** Scopes the integration needs that the token lacks. */
   missingScopes?: string[];
   /** The integration is connected by someone else (shown to other visitors). */
@@ -97,9 +104,10 @@ const M = {
   sub: 'Комментарии с сайта будут превращаться в issues в выбранном репозитории и, если хотите, попадать в проект GitHub.',
   loading: 'Загружаем настройки…',
   login: 'Войти через GitHub',
-  loginHint: 'GitHub попросит доступ к репозиториям и проектам. Токен хранится на вашем сервере, браузер его не видит.',
+  loginHint: 'GitHub предложит установить приложение и выбрать репозитории. Токен хранится на вашем сервере, браузер его не видит.',
   expired: 'Доступ к GitHub истёк или был отозван. Войдите заново, чтобы комментарии снова попадали в issues.',
-  noOauth: 'Вход через GitHub не настроен на сервере (переменные GITHUB_CLIENT_ID и GITHUB_CLIENT_SECRET). Для локальной разработки можно вставить токен.',
+  sessionExpired: 'Сессия входа в GitHub истекла. Комментарии по-прежнему создают issues, войдите заново, чтобы менять настройки.',
+  noOauth: 'Вход через GitHub не настроен на сервере: нет GitHub App. Для локальной разработки можно вставить токен.',
   patSummary: 'Вставить токен вместо входа (для локальной разработки)',
   patLabel: 'Personal access token',
   patHint: 'Classic-токен с правами repo и project или fine-grained с доступом Issues, Contents и Projects: read & write.',
@@ -115,6 +123,8 @@ const M = {
   repoHint: 'Показаны репозитории, где у вас есть права на запись.',
   reposLoading: 'Загружаем репозитории…',
   reposEmpty: 'Нет репозиториев, где у вас есть права на запись. Создайте репозиторий на GitHub или попросите доступ.',
+  reposEmptyApp: 'Приложению пока не открыт ни один репозиторий, где у вас есть права на запись. Откройте доступ на GitHub и обновите страницу.',
+  manageRepos: 'Изменить доступ к репозиториям на GitHub',
   reposNotFound: 'Ничего не найдено',
   private: 'private',
   noIssues: 'issues выкл.',
@@ -295,7 +305,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     /** Token expired mid-session: back to the sign-in view with the "expired" banner. */
     private handleAuthError(err: ApiError): boolean {
       if (err.code !== 'unauthorized') return false;
-      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired' };
+      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired', syncing: !!this.st.status?.bot };
       this.applyStatus(status);
       this.render();
       return true;
@@ -440,7 +450,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const d = document;
       const s = this.st.status!;
       const kids: Node[] = [];
-      if (s.reason === 'expired') kids.push(this.note('warn', M.expired));
+      if (s.reason === 'expired') kids.push(s.syncing ? this.note('info', M.sessionExpired) : this.note('warn', M.expired));
       if (s.owner) kids.push(this.note('info', M.ownedBy(s.owner)));
       if (this.st.notice?.kind === 'error') kids.push(this.note('error', this.st.notice.text));
       if (s.oauth) {
@@ -605,10 +615,17 @@ export function createSettingsElementClass(): CustomElementConstructor {
       input.disabled = !r.items.length;
       input.placeholder = r.loading && !r.items.length ? M.reposLoading : M.repoPlaceholder;
       if (r.error) state.replaceChildren(this.note('error', r.error.message, M.retry, () => void this.loadRepos()));
-      else if (!r.loading && !r.items.length) state.replaceChildren(this.note('info', M.reposEmpty));
+      else if (!r.loading && !r.items.length) state.replaceChildren(this.note('info', this.st.status?.app ? M.reposEmptyApp : M.reposEmpty), ...this.manageLink());
       else if (r.loading) state.replaceChildren(h(d, 'span', { class: 'cs-hint', role: 'status' }, [M.reposLoading]));
-      else state.replaceChildren(h(d, 'span', { class: 'cs-hint' }, [M.repoHint]));
+      else state.replaceChildren(h(d, 'span', { class: 'cs-hint' }, [M.repoHint]), ...this.manageLink());
       if (this.listOpen) this.renderList();
+    }
+
+    /** Repository access of a GitHub App is managed on GitHub; a new tab keeps the unsaved choice here. */
+    private manageLink(): HTMLElement[] {
+      if (!this.st.status?.app) return [];
+      const back = window.location.pathname + window.location.search;
+      return [h(document, 'a', { class: 'cs-manage', href: `${this.endpoint}/auth/install?return=${encodeURIComponent(back)}`, target: '_blank', rel: 'noopener noreferrer' }, [M.manageRepos])];
     }
 
     private openList() {

@@ -1,8 +1,11 @@
 import { GitHubError, MESSAGES, rateLimitMessage } from './errors';
 
 export interface GitHubClientOptions {
-  /** OAuth or personal access token. Lives on your server only. */
-  token: string;
+  /**
+   * GitHub App user access token or personal access token. Lives on your server only.
+   * A function is called before every request: user tokens expire, so it can refresh them.
+   */
+  token: string | (() => string | Promise<string>);
   /** REST/GraphQL base. Default `https://api.github.com` (GitHub Enterprise: `https://host/api/v3`). */
   apiUrl?: string;
   /** GraphQL endpoint. Default `{apiUrl}/graphql` (Enterprise: `https://host/api/graphql`). */
@@ -77,6 +80,7 @@ export class GitHubClient {
   private async once<T>(method: string, path: string, ro: RequestOptions): Promise<GitHubResponse<T>> {
     const doFetch = this.opts.fetch ?? globalThis.fetch.bind(globalThis);
     const url = /^https?:/.test(path) ? path : `${this.apiUrl}${path}`;
+    const token = typeof this.opts.token === 'function' ? await this.opts.token() : this.opts.token;
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
     const timer = controller ? setTimeout(() => controller.abort(), this.opts.timeoutMs ?? 20000) : undefined;
     let res: Response;
@@ -85,7 +89,7 @@ export class GitHubClient {
         method,
         headers: {
           Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${this.opts.token}`,
+          Authorization: `Bearer ${token}`,
           'X-GitHub-Api-Version': '2022-11-28',
           'User-Agent': this.opts.userAgent ?? 'comenta-feedback',
           ...(ro.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -110,13 +114,14 @@ export class GitHubClient {
     return this.request<T>('GET', path, ro).then((r) => r.data);
   }
 
-  /** GET every page (Link: rel="next") up to `maxPages`. */
-  async paginate<T>(path: string, maxPages = 10): Promise<T[]> {
+  /** GET every page (Link: rel="next") up to `maxPages`. `key`: the list is wrapped, `{ [key]: [...] }`. */
+  async paginate<T>(path: string, maxPages = 10, key?: string): Promise<T[]> {
     const out: T[] = [];
     let next: string | null = path;
     for (let i = 0; next && i < maxPages; i++) {
-      const res: GitHubResponse<T[]> = await this.request<T[]>('GET', next);
-      if (Array.isArray(res.data)) out.push(...res.data);
+      const res: GitHubResponse<unknown> = await this.request<unknown>('GET', next);
+      const list = key ? (res.data as Record<string, unknown> | null)?.[key] : res.data;
+      if (Array.isArray(list)) out.push(...(list as T[]));
       next = nextLink(res.headers.get('link'));
     }
     return out;
