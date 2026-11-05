@@ -1,0 +1,206 @@
+import { expect, test } from 'claude-code/testing'
+
+import { connect, parseRemote, pickRemote } from '../hooks/tracker'
+
+const PANE = {
+  plugin: 'issues-panel',
+  component: 'Pane',
+  requestId: 'issues',
+  props: {
+    title: 'Issues',
+    isFocused: false,
+    bodyColumns: 50,
+    placement: 'dock',
+    scroll: { offset: 0, bodyRows: 40 },
+    view: {},
+  },
+} as const
+
+const ok = (stdout: unknown = '') => ({
+  value: {
+    exitCode: 0,
+    stdout: typeof stdout === 'string' ? stdout : JSON.stringify(stdout),
+    stderr: '',
+    isStdoutTruncated: false,
+    isStderrTruncated: false,
+  },
+})
+const fail = (stderr: string) => ({
+  value: { exitCode: 1, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false },
+})
+
+const GH_ISSUES = [
+  {
+    number: 7,
+    title: 'Кнопка не работает',
+    state: 'open',
+    user: { login: 'anna' },
+    labels: [{ name: 'bug' }],
+    html_url: 'https://github.com/acme/site/issues/7',
+    updated_at: new Date().toISOString(),
+    comments: 1,
+    body: 'Не нажимается',
+  },
+  {
+    number: 6,
+    title: 'PR, не issue',
+    state: 'open',
+    user: { login: 'bob' },
+    labels: [],
+    html_url: 'https://github.com/acme/site/pull/6',
+    updated_at: new Date().toISOString(),
+    comments: 0,
+    body: '',
+    pull_request: {},
+  },
+  {
+    number: 3,
+    title: 'Старая задача',
+    state: 'closed',
+    user: { login: 'bob' },
+    labels: [],
+    html_url: 'https://github.com/acme/site/issues/3',
+    updated_at: '2026-01-01T00:00:00Z',
+    comments: 0,
+    body: '',
+  },
+]
+
+test('remote URLs of every form are read', () => {
+  expect(parseRemote('git@github.com:acme/site.git')).toEqual({ host: 'github.com', path: 'acme/site' })
+  expect(parseRemote('https://github.com/acme/site')).toEqual({ host: 'github.com', path: 'acme/site' })
+  expect(parseRemote('https://oauth2:x@gitlab.example.ru/group/sub/app.git')).toEqual({
+    host: 'gitlab.example.ru',
+    path: 'group/sub/app',
+  })
+  expect(parseRemote('ssh://git@git.corp:2222/team/app.git')).toEqual({ host: 'git.corp', path: 'team/app' })
+  expect(parseRemote('/srv/repos/app.git')).toBeUndefined()
+  expect(
+    pickRemote('fork\tgit@github.com:me/site.git (fetch)\norigin\tgit@github.com:acme/site.git (fetch)\n'),
+  ).toBe('git@github.com:acme/site.git')
+})
+
+test('a host neither CLI is signed in to says what to run', async () => {
+  const run = async (argv: readonly string[]) =>
+    argv[1] === '--version'
+      ? { exitCode: 0, stdout: '', stderr: '' }
+      : { exitCode: 1, stdout: '', stderr: 'not logged in' }
+  await expect(connect(run, { host: 'git.corp', path: 'team/app' })).rejects.toThrow(/glab auth login/)
+})
+
+test('a missing login on a known host is told by the API answer', async ($, on) => {
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'git') return ok('origin\thttps://github.com/acme/site.git (fetch)\n')
+    if (e.argv[0] !== 'gh') throw new Error('not found')
+    if (e.argv[1] === '--version') return ok()
+    return fail('HTTP 401: Bad credentials (https://api.github.com/repos/acme/site/issues)')
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /gh auth login/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the pane lists issues, opens one with comments, closes it, and inserts it', async ($, on) => {
+  const calls: string[] = []
+  let filled = ''
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    calls.push(argv.join(' '))
+    if (argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
+    if (argv[0] !== 'gh') throw new Error('not found')
+    if (argv[1] === '--version' || argv[1] === 'auth') return ok()
+    const endpoint = argv[argv.length - 1]!
+    if (endpoint.startsWith('repos/acme/site/issues?')) return ok(GH_ISSUES)
+    if (endpoint === 'repos/acme/site/issues/7/comments?per_page=100') {
+      return ok([{ user: { login: 'vlad' }, body: 'Проверю', created_at: new Date().toISOString() }])
+    }
+    if (endpoint === 'repos/acme/site/issues/7' && argv.includes('PATCH')) return ok({ number: 7, state: 'closed' })
+    return fail(`unexpected ${endpoint}`)
+  })
+  on('prompt.fill', (_, e) => {
+    filled = e.text
+    return { isFilled: true }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'refresh' })
+
+    expect(await ui.find({ type: 'Text', text: /открытых 1 из 2/ })).toBeDefined()
+    expect(await ui.find({ key: 'issue-6' })).toBeUndefined()
+
+    await ui.press({ key: 'issue-7' })
+    expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /vlad/ })).toBeDefined()
+
+    await ui.press({ key: 'insert' })
+    expect(filled).toContain('GitHub issue #7: Кнопка не работает')
+    expect(filled).toContain('https://github.com/acme/site/issues/7')
+
+    if (surface === 'terminal') {
+      await ui.press({ key: 'close' })
+      await ui.press({ key: 'close-yes' })
+      expect(calls.some(c => c.includes('PATCH') && c.includes('state=closed'))).toBe(true)
+      expect(await ui.find({ key: 'close' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: /^Закрыт$/ })).toBeDefined()
+    }
+
+    await ui.press({ key: 'back' })
+    expect(await ui.find({ key: 'issue-7' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a GitLab repository is read through glab, system notes left out', async ($, on) => {
+  on('session.cwd', () => ({ value: '/work/app' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'git') return ok('origin\thttps://gitlab.example.ru/group/app.git (fetch)\n')
+    if (argv[0] !== 'glab') throw new Error('not found')
+    if (argv[1] === '--version' || argv[1] === 'auth') return ok()
+    const endpoint = argv[argv.length - 1]!
+    if (endpoint.startsWith('projects/group%2Fapp/issues?')) {
+      return ok([
+        {
+          iid: 12,
+          title: 'Ошибка входа',
+          state: 'opened',
+          author: { username: 'kate' },
+          labels: ['auth'],
+          web_url: 'https://gitlab.example.ru/group/app/-/issues/12',
+          updated_at: new Date().toISOString(),
+          user_notes_count: 1,
+          description: 'Падает',
+        },
+      ])
+    }
+    if (endpoint.startsWith('projects/group%2Fapp/issues/12/notes?')) {
+      return ok([
+        { author: { username: 'kate' }, body: 'changed the description', system: true, created_at: '' },
+        { author: { username: 'oleg' }, body: 'Воспроизвёл', system: false, created_at: '' },
+      ])
+    }
+    return fail(`unexpected ${endpoint}`)
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /GitLab · открытых 1 из 1/ })).toBeDefined()
+  await ui.press({ key: 'issue-12' })
+  expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /oleg/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a folder that is not a repository says so', async ($, on) => {
+  on('session.cwd', () => ({ value: '/tmp' }))
+  on('process.run', () => fail('fatal: not a git repository'))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /не git-репозиторий/ })).toBeDefined()
+  await ui.unmount()
+})
