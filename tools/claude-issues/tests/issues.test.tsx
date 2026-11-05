@@ -269,3 +269,51 @@ test('without gh and without a git login, the panel says what to do', async ($, 
   expect(await ui.find({ type: 'Text', text: /не найден gh, и git не хранит пароль/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a row above the prompt shows while the pane is not up and reopens it', async ($, on) => {
+  // The first open is not placed (as when the person closed the pane):
+  // the row shows; its button opens the pane, and the row goes.
+  let opens = 0
+  on('ui.open', () => {
+    opens += 1
+    return opens > 1 ? { value: { isPlaced: true } } : { value: { isPlaced: false, reason: 'closed' } }
+  })
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
+    if (e.argv[0] !== 'gh') throw new Error('not found')
+    if (e.argv[1] === '--version' || e.argv[1] === 'auth') return ok()
+    return ok(GH_ISSUES)
+  })
+  on('command.register', () => ({ value: { command: 'issues' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('clock.every', () => ({ value: undefined }))
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
+  const BAND = {
+    plugin: 'issues-panel',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: {
+      hasSurvey: false,
+      isWorking: false,
+      maxRows: 3,
+      bodyColumns: 80,
+      scroll: { offset: 0, bodyRows: 3 },
+      view: {},
+    },
+  } as const
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(opens).toBe(1)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ key: 'open-issues' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
+  await band.press({ key: 'open-issues' })
+  expect(opens).toBe(2)
+  expect(await band.find({ key: 'open-issues' })).toBeUndefined()
+  await band.unmount()
+})

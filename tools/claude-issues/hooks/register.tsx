@@ -28,6 +28,14 @@ const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as 
   shape: 'detail-1',
 })
 
+const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
+
+/** Opens the pane and notes whether the surface placed it. */
+async function openPane($: EngineInterface): Promise<void> {
+  const opened = await $.ui.open({ id: PANE, title: TITLE })
+  await update($, isPaneOpen, () => opened.isPlaced)
+}
+
 const setList = ($: EngineInterface, fn: (old: IssuesList) => IssuesList) => update($, list, fn)
 const setDetail = ($: EngineInterface, fn: (old: IssuesDetail | null) => IssuesDetail | null) =>
   update($, detail, fn)
@@ -134,7 +142,7 @@ export const register: Register = on => {
       name: 'issues',
       description: 'Показать issues GitHub/GitLab этого репозитория в панели',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
+    void openPane($)
     void load($)
     $.clock.every(REFRESH_MS, () => {
       void load($)
@@ -143,9 +151,34 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'issues' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
+    await openPane($)
     void load($)
     return { text: 'Панель issues открыта.' }
+  })
+
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
+    if (e.id === PANE) await update($, isPaneOpen, () => false)
+    return closed
+  })
+
+  // While the pane is closed, a thin row above the prompt brings it back.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await read($, isPaneOpen))) return next(e)
+    const state = await read($, list)
+    if (state.status === 'error' && !state.repo) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const open = state.issues.filter(i => i.state === 'open').length
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text dimColor>
+          Issues{state.repo ? ` · открытых: ${open}` : ''}
+        </Text>
+        <Button key="open-issues" dimColor onPress={() => openPane($)}>
+          Открыть
+        </Button>
+      </Box>
+    )
   })
 
   // The session moved to another folder: show that folder's repository.

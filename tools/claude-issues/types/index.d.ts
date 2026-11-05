@@ -57,6 +57,8 @@ declare module 'claude-code' {
     'issues-panel': {
       list: Shaped<IssuesList>
       detail: Shaped<IssuesDetail | null>
+      /** Whether the Issues pane is up; the row above the prompt shows while it is not. */
+      isPaneOpen: boolean
     }
   }
 }
