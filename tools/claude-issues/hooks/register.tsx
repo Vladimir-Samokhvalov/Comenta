@@ -7,6 +7,7 @@ import {
   ago,
   closeIssue,
   connect,
+  cleanMarkdown,
   issueAsContext,
   listComments,
   listIssues,
@@ -250,8 +251,8 @@ export const register: Register = on => {
             </Box>
           )}
           {open.error && <Text color="error">{open.error}</Text>}
-          {issue.body.trim() ? (
-            <Markdown text={issue.body} />
+          {cleanMarkdown(issue.body) ? (
+            <Markdown text={cleanMarkdown(issue.body)} />
           ) : (
             <Text dimColor>Без описания</Text>
           )}
@@ -263,14 +264,15 @@ export const register: Register = on => {
               <Text dimColor>
                 {c.author} · {ago(c.createdAt, now)}
               </Text>
-              <Markdown text={c.body.trim() || '—'} />
+              <Markdown text={cleanMarkdown(c.body) || '—'} />
             </Box>
           ))}
         </Box>
       )
     }
 
-    const openCount = state.issues.filter(i => i.state === 'open').length
+    // Closed issues are not listed (one closed here stays in its card until Назад).
+    const shown = state.issues.filter(i => i.state === 'open')
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
@@ -282,8 +284,7 @@ export const register: Register = on => {
             )}
             {repo && (
               <Text dimColor>
-                {repo.provider === 'github' ? 'GitHub' : 'GitLab'} · открытых {openCount} из{' '}
-                {state.issues.length}
+                {repo.provider === 'github' ? 'GitHub' : 'GitLab'} · открытых: {shown.length}
               </Text>
             )}
           </Box>
@@ -292,12 +293,12 @@ export const register: Register = on => {
           </Button>
         </Box>
         {state.status === 'error' && <Text color="error">{state.error}</Text>}
-        {state.status === 'loading' && state.issues.length === 0 && <Text dimColor>Загружаю…</Text>}
-        {state.status === 'ready' && state.issues.length === 0 && <Text dimColor>Issues нет</Text>}
+        {state.status === 'loading' && shown.length === 0 && <Text dimColor>Загружаю…</Text>}
+        {state.status === 'ready' && shown.length === 0 && <Text dimColor>Открытых issues нет</Text>}
         <Box flexDirection="column">
-          {state.issues.map(i => (
+          {shown.map(i => (
             <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
-              <Text color={i.state === 'open' ? 'success' : 'merged'}>{i.state === 'open' ? '●' : '✓'}</Text>
+              <Text color="success">●</Text>
               {` #${i.number} ${i.title} `}
               <Text dimColor>
                 {ago(i.updatedAt, now)}

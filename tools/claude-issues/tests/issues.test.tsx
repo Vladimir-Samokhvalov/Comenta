@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { connect, parseRemote, pickRemote } from '../hooks/tracker'
+import { cleanMarkdown, connect, parseRemote, pickRemote } from '../hooks/tracker'
 
 const PANE = {
   plugin: 'issues-panel',
@@ -80,6 +80,13 @@ test('remote URLs of every form are read', () => {
   ).toBe('git@github.com:acme/site.git')
 })
 
+test('hidden markers and HTML tags are not drawn as text', () => {
+  const body =
+    '| a | b |\n\n<sub>Оставлено через Comenta · [открыть](https://x.ru)</sub>\n\n<!-- comenta:id=cbb -->'
+  expect(cleanMarkdown(body)).toBe('| a | b |\n\nОставлено через Comenta · [открыть](https://x.ru)')
+  expect(cleanMarkdown('**Владимир:** текст\n\n<!-- comenta:reply=75b\n-->')).toBe('**Владимир:** текст')
+})
+
 test('a host neither CLI is signed in to says what to run', async () => {
   const run = async (argv: readonly string[]) =>
     argv[1] === '--version'
@@ -126,12 +133,13 @@ test('the pane lists issues, opens one with comments, closes it, and inserts it'
   })
   on('ui.toast', () => ({ value: undefined }))
 
-  for (const surface of ['terminal', 'desktop'] as const) {
+  for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'refresh' })
 
-    expect(await ui.find({ type: 'Text', text: /открытых 1 из 2/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
     expect(await ui.find({ key: 'issue-6' })).toBeUndefined()
+    expect(await ui.find({ key: 'issue-3' })).toBeUndefined()
 
     await ui.press({ key: 'issue-7' })
     expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
@@ -150,7 +158,9 @@ test('the pane lists issues, opens one with comments, closes it, and inserts it'
     }
 
     await ui.press({ key: 'back' })
-    expect(await ui.find({ key: 'issue-7' })).toBeDefined()
+    // Closed on the terminal pass: no longer listed.
+    if (surface === 'terminal') expect(await ui.find({ key: 'issue-7' })).toBeUndefined()
+    else expect(await ui.find({ key: 'issue-7' })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -189,7 +199,7 @@ test('a GitLab repository is read through glab, system notes left out', async ($
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /GitLab · открытых 1 из 1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /GitLab · открытых: 1/ })).toBeDefined()
   await ui.press({ key: 'issue-12' })
   expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /oleg/ })).toBeDefined()
@@ -240,7 +250,7 @@ test('without gh the login git keeps is used, straight to the API', async ($, on
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
   expect(credentialInput).toBe('protocol=https\nhost=github.com\n\n')
-  expect(await ui.find({ type: 'Text', text: /открытых 1 из 2/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
   expect(requests[0]?.auth).toBe('Bearer gho_secret')
 
   await ui.press({ key: 'issue-7' })
