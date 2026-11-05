@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Comenta — настройки GitHub</title>
+  <title>Comenta — настройки трекера</title>
   <style>
     body { margin: 0; font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #f6f5f1; color: #1f1e1d; }
     .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: #111827; color: #fff; }
@@ -20,9 +20,9 @@
     <span>Настройки</span>
   </header>
   <main>
-    <h1>Комментарии → GitHub issues</h1>
-    <p class="muted">Эту страницу видит только владелец сайта. Подключите GitHub один раз: дальше каждый комментарий посетителей станет issue в выбранном репозитории.</p>
-    <comenta-settings endpoint="/api/github"></comenta-settings>
+    <h1>Комментарии → issues</h1>
+    <p class="muted">Эту страницу видит только владелец сайта. Подключите GitHub или GitLab один раз: дальше каждый комментарий посетителей станет issue в выбранном репозитории или проекте.</p>
+    <comenta-settings providers="github gitlab" endpoint="/api/github" gitlab-endpoint="/api/gitlab"></comenta-settings>
   </main>
   <script type="module">
     import { defineSettingsElement } from '/dist/settings.js';

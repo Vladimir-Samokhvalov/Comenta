@@ -30,6 +30,14 @@ export default defineConfig({
       COMENTA_GITHUB_DRAIN_MS: '400',
       COMENTA_GITHUB_POLL_MS: '300',
       COMENTA_GITHUB_REFRESH_MS: '300',
+      // fake self-hosted GitLab at /__gitlab (demo/gitlab-mock.mjs)
+      GITLAB_MOCK: '1',
+      GITLAB_STORE: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-gitlab-${Date.now()}.json`,
+      COMENTA_GITLAB_RETRY_MS: '20',
+      COMENTA_GITLAB_BACKOFF_MS: '300',
+      COMENTA_GITLAB_DRAIN_MS: '400',
+      COMENTA_GITLAB_POLL_MS: '300',
+      COMENTA_GITLAB_REFRESH_MS: '300',
     },
   },
 });

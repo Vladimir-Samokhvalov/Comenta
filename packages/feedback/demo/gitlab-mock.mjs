@@ -8,7 +8,7 @@
 //   GET  /__gitlab/oauth/token/info         scopes of a token
 //   *    /__gitlab/api/v4/...               REST
 //   GET  /__gitlab/state                     what was created (issues, notes, uploads)
-//   POST /__gitlab/control                   { revoke, rateLimit, failNext, delayMs, projects: 'empty', scopes, expiresIn, level }
+//   POST /__gitlab/control                   { revoke, rateLimit, failNext, delayMs, projects: 'empty', scopes, expiresIn, level, many }
 //   POST /__gitlab/issue                     act on an issue as someone on GitLab:
 //                                              { project, iid, close: true } | { …, reopen: true } | { …, delete: true } | { …, move: true }
 //                                              { project, iid, note: 'text', username?, internal?, system? } → { id }
@@ -342,6 +342,8 @@ ${ok ? `<h1 style="font-size:20px;margin:0 0 12px">Разрешить Comenta д
       if ('projects' in c) s.emptyProjects = c.projects === 'empty';
       if ('scopes' in c) s.grantScopes = String(c.scopes).split(/[\s,]+/).filter(Boolean);
       if ('expiresIn' in c) s.expiresIn = Number(c.expiresIn);
+      // many projects: the settings list is cut and searching asks the server
+      if ('many' in c) for (let i = 1; i <= Number(c.many); i++) s.projects.push({ id: 1000 + i, namespace: { full_path: 'acme-studio/bulk', kind: 'group' }, path: `bulk-${i}`, name: `Bulk ${i}`, visibility: 'private', archived: false, issues_enabled: true, level: 30, last_activity_at: '2026-01-01T00:00:00Z' });
       if ('level' in c) for (const p of s.projects) if (p.id === c.level.project || `${p.namespace.full_path}/${p.path}` === c.level.project) p.level = c.level.value;
       return json(res, 200, { ok: true }), true;
     }
