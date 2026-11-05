@@ -341,7 +341,6 @@ export const STYLES = /* css */ `
   background: var(--ph-bg); border: 1px solid var(--ph-line); color: var(--ph-ink);
 }
 .ph-mine .ph-bubble { border-radius: 14px 14px 4px 14px; background: rgba(var(--ph-accent-rgb), .13); border-color: transparent; }
-.ph-msg-new .ph-bubble { box-shadow: inset 3px 0 0 var(--ph-unread); }
 .ph-msg-name { font-size: 12px; line-height: 16px; font-weight: 600; margin-bottom: 1px; color: #c96442; }
 .ph-msg-name[data-color="1"] { color: #7b6bd6; }
 .ph-msg-name[data-color="2"] { color: #3f8f5b; }
