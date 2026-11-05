@@ -1,7 +1,7 @@
 import type { FeedbackAttachment, FeedbackIssueLink, FeedbackPayload } from '../types';
 import type { GitHubClient } from './client';
 import { GitHubError } from './errors';
-import { issueBody, issueTitle, marker, type UploadedAttachment } from './issue';
+import { issueBody, issueTitle, marker, type UploadedAttachment } from '../tracker/format';
 
 export interface GitHubTarget {
   owner: string;

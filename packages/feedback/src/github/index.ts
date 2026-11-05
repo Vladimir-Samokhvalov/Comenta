@@ -12,8 +12,10 @@ export { GitHubAppAuth, createAppJwt, pkcs1ToPkcs8 } from './app';
 export type { GitHubAppCredentials, InstallationToken } from './app';
 export { listRepos, listInstallationRepos, countInstallations, checkRepo, listProjects } from './resources';
 export type { GitHubRepo, GitHubProject } from './resources';
-export { issueTitle, issueBody, attachmentCaption, formatDuration, neutralize, marker } from './issue';
-export type { UploadedAttachment } from './issue';
+export { issueTitle, issueBody, attachmentCaption, formatDuration, neutralize, marker } from '../tracker/format';
+export type { UploadedAttachment } from '../tracker/format';
+export { TrackerError, providerName, mergeComments, replyFromComment as replyFromTrackerComment } from '../tracker';
+export type { TrackerErrorCode, TrackerComment, TrackerIssueState } from '../tracker';
 export { syncComment, findIssue, addToProject, uploadAttachments, ensureBranch } from './sync';
 export type { GitHubTarget, SyncFile, SyncOptions, SyncResult } from './sync';
 export {
@@ -33,6 +35,7 @@ export {
   updateReplyComment,
   deleteReplyComment,
   replyFromComment,
+  commentOf,
   mergeIssueComments,
   forViewer,
 } from './threads';

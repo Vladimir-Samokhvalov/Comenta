@@ -75,7 +75,7 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   hideResolved: 'Скрыть закрытые',
   unread: (n) => `${n} ${plural(n, 'тред', 'треда', 'тредов')} с новыми ответами`,
   replies: (n) => `${n} ${plural(n, 'ответ', 'ответа', 'ответов')}`,
-  issueLink: (i) => `${i.provider === 'github' ? 'GitHub' : i.provider} #${i.number}`,
+  issueLink: (i) => `${DEFAULT_LABELS.providerName(i.provider)} #${i.number}`,
   issueState: (i) => (i.state === 'closed' ? 'закрыт' : 'открыт'),
   issueStateLong: (i) => {
     if (i.state !== 'closed') return 'открыт';
@@ -84,10 +84,11 @@ export const DEFAULT_LABELS: FeedbackLabels = {
     return r ? `закрыт · ${r}` : 'закрыт';
   },
   issueUnavailable: 'Issue недоступен',
-  closedOnGitHub: (name, reason) => {
+  providerName: (p) => (p === 'github' ? 'GitHub' : p === 'gitlab' ? 'GitLab' : p),
+  closedOnTracker: (provider, name, reason) => {
     const why: Record<string, string> = { not_planned: 'не будет сделан', duplicate: 'дубликат' };
     const r = reason && why[reason] ? ` · ${why[reason]}` : '';
-    return `${name ? `${name} закрыл(а)` : 'Закрыт'} на GitHub${r}`;
+    return `${name ? `${name} закрыл(а)` : 'Закрыт'} на ${DEFAULT_LABELS.providerName(provider)}${r}`;
   },
-  fromGitHub: 'из GitHub',
+  fromTracker: (provider) => `из ${DEFAULT_LABELS.providerName(provider)}`,
 };

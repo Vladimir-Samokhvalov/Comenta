@@ -26,6 +26,16 @@
       "import": "./dist/github.js",
       "require": "./dist/github.cjs"
     },
+    "./gitlab": {
+      "types": "./dist/types/gitlab/index.d.ts",
+      "import": "./dist/gitlab.js",
+      "require": "./dist/gitlab.cjs"
+    },
+    "./tracker": {
+      "types": "./dist/types/tracker/index.d.ts",
+      "import": "./dist/tracker.js",
+      "require": "./dist/tracker.cjs"
+    },
     "./settings": {
       "types": "./dist/types/settings/index.d.ts",
       "import": "./dist/settings.js",
@@ -42,6 +52,8 @@
     "test:e2e": "pnpm build && playwright test",
     "demo": "pnpm build && node demo/server.mjs",
     "demo:github": "pnpm build && GITHUB_MOCK=1 node demo/server.mjs",
+    "demo:gitlab": "pnpm build && GITLAB_MOCK=1 node demo/server.mjs",
+    "demo:mock": "pnpm build && GITHUB_MOCK=1 GITLAB_MOCK=1 node demo/server.mjs",
     "github-app:setup": "node demo/github-app-setup.mjs",
     "size": "node scripts/size.mjs",
     "standalone": "pnpm build && node scripts/standalone.mjs"
