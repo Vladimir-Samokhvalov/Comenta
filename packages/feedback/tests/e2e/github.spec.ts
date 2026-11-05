@@ -668,3 +668,58 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await expect.poll(async () => (await comments(page)).map((c) => [c.number, c.body.split('\n')[0]]), { timeout: 10_000 }).toEqual([[1, '**Владимир:** Уточнение к комментарию']]);
   });
 });
+
+test.describe('security', () => {
+  const payload = (id: string, extra: object = {}) => ({
+    id,
+    text: 'Проверка',
+    target: { selector: '#inc', tag: 'button' },
+    page: { url: 'http://localhost/', title: 'Demo', viewport: { w: 1280, h: 800 } },
+    createdAt: new Date().toISOString(),
+    author: { id: 'guest-1', name: 'Гость' },
+    ...extra,
+  });
+  const headers = () => ({ 'X-Comenta-Space': space });
+
+  test('a client-sent attachment url never makes the server read and upload its own files', async ({ page }) => {
+    await configure(page, 'demo-owner/landing', null);
+    const id = `sec-${Date.now()}`;
+    const created = await page.request.post('/api/feedback', { data: payload(id), headers: headers() });
+    expect(created.status()).toBe(201);
+    await expect.poll(async () => (await ghState(page)).issues.length, { timeout: 10_000 }).toBe(1);
+    // a reply that points its "recording" at a file outside the uploads folder (the GitHub App private key, tokens…)
+    const evil = { id: 'evil-1', kind: 'audio', mimeType: 'audio/webm', name: 'voice.webm', url: '/uploads/../github-app.json' };
+    const reply = await page.request.post(`/api/feedback/${id}/replies`, {
+      data: { id: 'r-sec-1', text: 'смотри', createdAt: new Date().toISOString(), author: { id: 'guest-1', name: 'Гость' }, attachments: [evil] },
+      headers: headers(),
+    });
+    expect(reply.status()).toBe(201);
+    // the reply goes to GitHub, but without any file
+    await expect.poll(async () => (await (await page.request.get('/__github/state')).json()).comments.length, { timeout: 10_000 }).toBe(1);
+    expect((await ghState(page)).files).toEqual([]);
+    const stored = (await (await page.request.get('/api/feedback', { headers: headers() })).json()).find((c: { id: string }) => c.id === id);
+    expect(stored.replies[0].attachments[0].url).toBeUndefined();
+  });
+
+  test('uploads are only recordings and images, served so they can never run as a page', async ({ page }) => {
+    const id = `sec-${Date.now()}`;
+    const res = await page.request.post('/api/feedback', {
+      headers: headers(),
+      multipart: {
+        payload: JSON.stringify(payload(id, { attachments: [{ id: 'html-1', kind: 'audio', mimeType: 'audio/webm', name: 'x' }, { id: 'ok-1', kind: 'audio', mimeType: 'audio/webm', name: 'voice.webm' }] })),
+        'file:html-1': { name: 'page.html', mimeType: 'text/html', buffer: Buffer.from('<script>alert(1)</script>') },
+        'file:ok-1': { name: 'voice.webm', mimeType: 'audio/webm', buffer: Buffer.from('webm') },
+      },
+    });
+    expect(res.status()).toBe(201);
+    const { attachments } = await res.json();
+    expect(attachments).toEqual({ 'ok-1': '/uploads/ok-1.webm' });
+    expect((await page.request.get('/uploads/html-1.html')).status()).toBe(404);
+    expect((await page.request.get('/uploads/..%2fgithub-app.json')).status()).toBe(404);
+    const media = await page.request.get('/uploads/ok-1.webm');
+    expect(media.status()).toBe(200);
+    expect(media.headers()['content-type']).toBe('video/webm');
+    expect(media.headers()['x-content-type-options']).toBe('nosniff');
+    expect(media.headers()['content-security-policy']).toContain('sandbox');
+  });
+});

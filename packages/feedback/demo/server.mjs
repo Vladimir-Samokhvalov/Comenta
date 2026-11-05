@@ -28,8 +28,17 @@ const ROOT = resolve(import.meta.dirname, '..');
 const LOG = process.env.FEEDBACK_LOG ?? join(ROOT, 'demo', 'feedback.log');
 const PORT = Number(process.env.PORT ?? 5174);
 const UPLOADS = process.env.FEEDBACK_UPLOADS ?? join(ROOT, 'demo', 'uploads');
+const HOST = process.env.HOST ?? '127.0.0.1'; // only this computer; HOST=0.0.0.0 opens the demo to the network
 const TYPES = {
   '.webm': 'video/webm', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.map': 'application/json', '.json': 'application/json' };
+
+/**
+ * Recordings and screenshots the server accepts and serves: anything else (HTML, JS, SVG…) is refused, so an
+ * upload can never run as a page of this site. MEDIA_TYPES also sets the Content-Type they are served with.
+ */
+const MEDIA_TYPES = {
+  '.webm': 'video/webm', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /** space → comments. Loaded from the log on start, written back after every change. */
 const store = new Map();
@@ -90,8 +99,12 @@ const trackerOf = (space, comment) => trackers[comment?.issue?.provider] ?? (git
  * and no login) a request with `X-Comenta-Role: owner`; the viewer's author id comes from `X-Comenta-User`.
  * A real backend takes both from its own authentication.
  */
-const isOwner = (req) => github.isOwner(req, spaceOf(req)) || gitlab.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
-const viewerOf = (req) => ({ owner: isOwner(req), id: typeof req.headers['x-comenta-user'] === 'string' ? req.headers['x-comenta-user'].slice(0, 200) : undefined });
+// The demo's user switcher (X-Comenta-Role / X-Comenta-User) is believed only from this computer, and never with
+// COMENTA_DEMO_ROLES=0: from anywhere else anyone could claim to be the owner or another comment's author.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const demoRoles = (req) => process.env.COMENTA_DEMO_ROLES !== '0' && LOOPBACK.has(req.socket?.remoteAddress ?? '');
+const isOwner = (req) => github.isOwner(req, spaceOf(req)) || gitlab.isOwner(req, spaceOf(req)) || (demoRoles(req) && req.headers['x-comenta-role'] === 'owner');
+const viewerOf = (req) => ({ owner: isOwner(req), id: demoRoles(req) && typeof req.headers['x-comenta-user'] === 'string' ? req.headers['x-comenta-user'].slice(0, 200) : undefined });
 const listOf = (req) => {
   const k = spaceOf(req);
   if (!store.has(k)) store.set(k, []);
@@ -113,16 +126,28 @@ async function readItem(req) {
   const ctype = req.headers['content-type'] ?? '';
   const urls = {};
   const files = [];
-  if (!ctype.startsWith('multipart/form-data')) return { item: JSON.parse((await readBody(req)).toString('utf8')), urls, files };
-  const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
-  const parts = parseMultipart(await readBody(req, 50 * 1024 * 1024), boundary);
-  const item = JSON.parse(parts.find((p) => p.name === 'payload')?.data.toString('utf8') ?? 'null');
-  await mkdir(UPLOADS, { recursive: true });
+  const multipart = ctype.startsWith('multipart/form-data');
+  let item;
+  let parts = [];
+  if (!multipart) item = JSON.parse((await readBody(req)).toString('utf8'));
+  else {
+    const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
+    parts = parseMultipart(await readBody(req, 50 * 1024 * 1024), boundary);
+    item = JSON.parse(parts.find((p) => p.name === 'payload')?.data.toString('utf8') ?? 'null');
+  }
+  // The client never says where a file is: `url` is set here, and only for a file that came with this request.
+  // (A client-sent url like "/uploads/../github-app.json" would otherwise be read back and uploaded to the tracker.)
+  if (Array.isArray(item?.attachments)) {
+    item.attachments = item.attachments.filter((a) => a && typeof a === 'object' && SAFE_ID.test(String(a.id)));
+    for (const a of item.attachments) delete a.url;
+  } else if (item && typeof item === 'object') delete item.attachments;
+  if (parts.length) await mkdir(UPLOADS, { recursive: true });
   for (const p of parts.filter((p) => p.name?.startsWith('file:'))) {
-    const id = p.name.slice(5).replace(/[^a-zA-Z0-9-]/g, '');
-    const att = item?.attachments?.find((a) => a.id === id);
+    const id = p.name.slice(5);
+    const att = SAFE_ID.test(id) ? item?.attachments?.find((a) => a.id === id) : null;
     if (!att) continue;
-    const ext = (extname(p.filename ?? '') || '.webm').replace(/[^.a-z0-9]/gi, '');
+    const ext = (extname(p.filename ?? '') || '.webm').toLowerCase();
+    if (!MEDIA_TYPES[ext]) continue; // not a recording or an image: the attachment is shown as "not uploaded"
     await writeFile(join(UPLOADS, `${id}${ext}`), p.data);
     urls[id] = att.url = `/uploads/${id}${ext}`;
     files.push({ attachment: att, data: new Uint8Array(p.data) });
@@ -277,11 +302,18 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/uploads/') && req.method === 'GET') {
-      const file = normalize(join(UPLOADS, url.pathname.slice('/uploads/'.length)));
-      if (!file.startsWith(UPLOADS)) return void res.writeHead(404).end();
-      const data = await readFile(file);
-      const ext = extname(file);
-      res.writeHead(200, { 'Content-Type': TYPES[ext] ?? 'application/octet-stream', 'Accept-Ranges': 'none', 'Cache-Control': 'no-store' });
+      const name = url.pathname.slice('/uploads/'.length);
+      const ext = extname(name).toLowerCase();
+      // only files this server wrote: <id>.<media extension>, nothing else (no HTML, no other folders)
+      if (!SAFE_ID.test(name.slice(0, name.length - ext.length)) || !MEDIA_TYPES[ext]) return void res.writeHead(404).end('not found');
+      const data = await readFile(join(UPLOADS, name));
+      res.writeHead(200, {
+        'Content-Type': MEDIA_TYPES[ext],
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Accept-Ranges': 'none',
+        'Cache-Control': 'no-store',
+      });
       res.end(data);
       return;
     }
@@ -307,8 +339,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Comenta demo: http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Comenta demo: http://localhost:${PORT}${HOST === '127.0.0.1' || HOST === 'localhost' ? ' (только с этого компьютера; HOST=0.0.0.0 откроет доступ из сети)' : ` (слушает ${HOST}: доступен из сети)`}`);
   console.log(`Настройки (GitHub или GitLab): http://localhost:${PORT}/demo/settings.html`);
   console.log(`  GitHub: ${mock ? 'тестовый GitHub' : github.oauth ? (github.bot ? 'issues от имени бота приложения' : 'без приватного ключа: issues от вашего имени') : 'GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1'}`);
   console.log(`  GitLab: ${glMock ? 'тестовый GitLab' : gitlab.oauth ? `OAuth-приложения: ${gitlab.instances.join(', ')}` : 'OAuth-приложение не настроено (GITLAB_CLIENT_ID / GITLAB_CLIENT_SECRET или GITLAB_MOCK=1), можно подключиться по токену'}`);
