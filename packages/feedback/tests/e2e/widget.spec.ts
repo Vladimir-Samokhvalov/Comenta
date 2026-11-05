@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { comment, menuCount, openDemo, viewportBox, widget } from './helpers';
+import { comment, menuCount, openDemo, signIn, viewportBox, widget } from './helpers';
 
 test.describe('comment mode', () => {
   test('happy path: enable → select → write → send → pin', async ({ page }) => {
@@ -34,7 +34,7 @@ test.describe('comment mode', () => {
     expect(payload.target.tag).toBe('td');
     expect(payload.target.textSnippet).toBe('Борис');
     expect(payload.target.rect).toEqual({ x: expect.any(Number), y: expect.any(Number), w: expect.any(Number), h: expect.any(Number) });
-    expect(payload.author).toEqual({ id: 'vladimir', name: 'Владимир', role: 'owner' });
+    expect(payload.author).toEqual({ id: 'keycloak:u-vladimir', name: 'Владимир', role: 'owner' });
     const same = await page.evaluate((sel) => {
       const found = document.querySelectorAll(sel);
       return found.length === 1 && found[0].textContent === 'Борис';
@@ -373,6 +373,7 @@ test.describe('lifecycle & isolation', () => {
   });
 
   test('script tag build auto-initialises from data attributes', async ({ page }) => {
+    await signIn(page, 'anna');
     await page.goto('/demo/script-tag.html');
     const w = widget(page);
     await expect(w.toggle).toBeVisible();
@@ -381,8 +382,7 @@ test.describe('lifecycle & isolation', () => {
       throw new Error('click was not blocked');
     });
     const payload = await comment(page, '#btn', 'через script');
-    expect(payload.author.name).toBe('Гость');
-    expect(payload.author.id).toMatch(/^guest-/);
+    expect(payload.author).toEqual({ id: 'keycloak:u-anna', name: 'Анна' }); // from the sign-in (data-auth)
     expect(payload.target.selector).toBe('#btn');
   });
 });

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { widget } from './helpers';
+import { signIn as signInSite, widget, type MockUser } from './helpers';
 
 // The demo server runs with GITHUB_MOCK=1: a fake GitHub lives at /__github (demo/github-mock.mjs).
 // Its state is global, so this file runs serially and resets it before every test
@@ -86,6 +86,7 @@ async function leaveComment(page: Page, text: string, path = '/') {
 test.beforeEach(async ({ page, context }) => {
   await page.request.post('/__github/reset');
   await useGitHubSpace(page, context);
+  await signInSite(page, 'vladimir'); // the tracker settings are for the site owner
 });
 
 test.describe('GitHub settings', () => {
@@ -567,8 +568,8 @@ test.describe('GitHub issue ↔ thread sync', () => {
     const guest = await ctx.newPage();
     await guest.addInitScript((sp) => {
       (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
-      localStorage.setItem('comenta-demo-user', 'anna');
     }, space);
+    await signInSite(guest, 'anna');
     const listed = guest.waitForResponse((r) => r.url().includes('/api/feedback') && r.request().method() === 'GET');
     await guest.goto(`/?poll=400#comenta=${res.id}`); // closed threads' pins are hidden: open it by link
     const body = JSON.stringify(await (await listed).json());
@@ -585,7 +586,8 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await ctx.close();
 
     // the owner's own browser switched to another user hides them as well
-    await widget(page).userSelect.selectOption('anna');
+    await signInSite(page, 'anna');
+    await page.evaluate(() => (window as unknown as { fb: { refreshSignIn(): Promise<boolean> } }).fb.refreshSignIn());
     await expect(github(page)).toHaveCount(0);
     await expect(state(page)).toHaveCount(0);
   });
@@ -595,10 +597,10 @@ test.describe('GitHub issue ↔ thread sync', () => {
     const visitor = async (user: string) => {
       const ctx = await browser.newContext();
       const p = await ctx.newPage();
-      await p.addInitScript(([sp, u]) => {
+      await p.addInitScript((sp) => {
         (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
-        localStorage.setItem('comenta-demo-user', u);
-      }, [space, user] as const);
+      }, space);
+      await signInSite(p, (user === 'guest' ? 'boris' : user) as MockUser); // "guest": another signed-in visitor
       return { ctx, p };
     };
     // Anna (not the owner, no GitHub session) leaves a comment that becomes issue #1

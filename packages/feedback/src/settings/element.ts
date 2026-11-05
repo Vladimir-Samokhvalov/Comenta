@@ -235,7 +235,9 @@ function plural(n: number, one: string, few: string, many: string): string {
 }
 
 interface State {
-  phase: 'loading' | 'error' | 'signedOut' | 'connected';
+  phase: 'loading' | 'error' | 'siteSignIn' | 'signedOut' | 'connected';
+  /** Site sign-in (Google, Yandex, Keycloak) that the tracker settings need first. */
+  site?: { code: 'signin_required' | 'not_owner'; message: string; providers: Array<{ id: string; label: string }> };
   /** The tracker shown. */
   provider: SettingsProvider;
   /** Statuses of every offered tracker (null: could not be read). */
@@ -298,7 +300,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private searchTimer: ReturnType<typeof setTimeout> | undefined;
 
     static get observedAttributes() {
-      return ['endpoint', 'gitlab-endpoint', 'providers'];
+      return ['endpoint', 'gitlab-endpoint', 'providers', 'auth-endpoint'];
     }
 
     constructor() {
@@ -318,6 +320,11 @@ export function createSettingsElementClass(): CustomElementConstructor {
     get providers(): SettingsProvider[] {
       const list = (this.getAttribute('providers') || 'github').split(/[\s,]+/).filter((p): p is SettingsProvider => p === 'github' || p === 'gitlab');
       return list.length ? [...new Set(list)] : ['github'];
+    }
+
+    /** Sign-in of the site (`auth-endpoint`, default `/api/auth`): the settings are for the site owner. */
+    private get authBase(): string {
+      return (this.getAttribute('auth-endpoint') || '/api/auth').replace(/\/$/, '');
     }
 
     private base(p: SettingsProvider = this.st.provider): string {
@@ -367,6 +374,18 @@ export function createSettingsElementClass(): CustomElementConstructor {
       if (mine.s) {
         this.applyStatus(mine.s);
         if (cbError) this.st.notice = { kind: 'error', text: cbError };
+      } else if (mine.e && (mine.e.code === 'signin_required' || mine.e.code === 'not_owner')) {
+        // the server wants the site owner signed in first
+        let providers: Array<{ id: string; label: string }> = [];
+        try {
+          const res = await (this.fetchImpl ?? window.fetch.bind(window))(`${this.authBase}/me`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+          const me = (await res.json()) as { providers?: Array<{ id: string; label: string }> };
+          providers = Array.isArray(me.providers) ? me.providers.filter((p) => typeof p?.id === 'string' && typeof p?.label === 'string') : [];
+        } catch {
+          /* no sign-in routes: only the message */
+        }
+        this.st.phase = 'siteSignIn';
+        this.st.site = { code: mine.e.code, message: mine.e.message, providers };
       } else {
         this.st.phase = 'error';
         this.st.error = mine.e;
@@ -571,6 +590,9 @@ export function createSettingsElementClass(): CustomElementConstructor {
         case 'error':
           body = h(d, 'div', { class: 'cs-body' }, [this.note('error', this.st.error?.message ?? M.offline, M.retry, () => void this.reload())]);
           break;
+        case 'siteSignIn':
+          body = this.siteSignInView();
+          break;
         case 'signedOut':
           body = this.signedOutView();
           break;
@@ -623,6 +645,27 @@ export function createSettingsElementClass(): CustomElementConstructor {
         kids.push(b);
       }
       return h(d, 'div', { class: `cs-note cs-note-${kind}`, role: kind === 'error' ? 'alert' : 'status' }, kids);
+    }
+
+    /** Not signed in to the site, or signed in as someone who is not the owner. */
+    private siteSignInView(): HTMLElement {
+      const d = document;
+      const site = this.st.site!;
+      const back = window.location.pathname + window.location.search;
+      const kids: Node[] = [this.note(site.code === 'not_owner' ? 'warn' : 'info', site.message)];
+      for (const p of site.providers) {
+        kids.push(h(d, 'a', { class: 'cs-btn cs-site-login', 'data-provider': p.id, href: `${this.authBase}/login/${encodeURIComponent(p.id)}?return=${encodeURIComponent(back)}` }, [`Войти через ${p.label}`]));
+      }
+      if (site.code === 'not_owner') {
+        const out = h(d, 'button', { type: 'button', class: 'cs-btn cs-btn-sm cs-site-logout' }, ['Выйти']);
+        out.addEventListener('click', () => {
+          void (this.fetchImpl ?? window.fetch.bind(window))(`${this.authBase}/logout`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+            .catch(() => {})
+            .then(() => this.reload());
+        });
+        kids.push(out);
+      }
+      return h(d, 'div', { class: 'cs-body cs-site' }, kids);
     }
 
     private signedOutView(): HTMLElement {

@@ -27,12 +27,14 @@ export const FeedbackWidget = forwardRef<FeedbackInstance | null, FeedbackWidget
       showComments: () => instance.current?.showComments(),
       openThread: (id) => instance.current?.openThread(id) ?? false,
       getUnreadCount: () => instance.current?.getUnreadCount() ?? 0,
+      refreshSignIn: () => instance.current?.refreshSignIn() ?? Promise.resolve(false),
       destroy: () => instance.current?.destroy(),
     }),
     [],
   );
 
   const { position, zIndex, ignoreSelector, enabled, labels } = props;
+  const authKey = props.auth ? `${props.auth.endpoint}|${props.auth.popup !== false}` : '';
   const labelsKey = labels ? JSON.stringify(labels, (_k, v) => (typeof v === 'function' ? String(v) : v)) : '';
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export const FeedbackWidget = forwardRef<FeedbackInstance | null, FeedbackWidget
       fb.destroy();
       if (instance.current === fb) instance.current = null;
     };
-  }, [position, zIndex, ignoreSelector, enabled, labelsKey]);
+  }, [position, zIndex, ignoreSelector, enabled, labelsKey, authKey]);
 
   useEffect(() => {
     instance.current?.update({

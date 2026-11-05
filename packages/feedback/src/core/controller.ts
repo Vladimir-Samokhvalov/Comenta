@@ -16,6 +16,7 @@ import { DEFAULT_IGNORE_SELECTOR, describeTarget } from '../selector/sanitize';
 import { DEFAULT_LABELS } from '../ui/labels';
 import { Popover } from '../ui/popover';
 import { Menu, Panel, type PanelItem } from '../ui/menu';
+import { SignIn, type SignInProvider } from '../ui/signin';
 import { View, type Rect } from '../ui/view';
 import { h } from '../ui/h';
 import { normalizeUrl } from './url';
@@ -54,6 +55,12 @@ export class Controller {
   private popover: Popover | null = null;
   private menu: Menu | null = null;
   private panel: Panel | null = null;
+  private signIn: SignIn | null = null;
+  /** `off`: no `auth` option; otherwise whether the visitor is signed in (`unknown` until `/me` answered). */
+  private authState: 'off' | 'unknown' | 'out' | 'in' = 'off';
+  private providers: SignInProvider[] = [];
+  /** Comment mode was asked for while signed out: enter it right after signing in. */
+  private activateAfterSignIn = false;
   private pinsHidden = false;
   /** Pins of resolved threads are hidden unless turned on in the menu. */
   private showResolved = false;
@@ -91,6 +98,10 @@ export class Controller {
     this.labels = { ...DEFAULT_LABELS, ...options.labels, kinds: { ...DEFAULT_LABELS.kinds, ...options.labels?.kinds }, kindEmoji: { ...DEFAULT_LABELS.kindEmoji, ...options.labels?.kindEmoji } };
     this.url = normalizeUrl(this.win.location.href);
     this.guest = loadGuest(this.win);
+    if (options.auth) {
+      this.authState = 'unknown';
+      this.options.author = undefined; // the server says who is signed in
+    }
     this.seen = new SeenStore(this.win, this.me().id ?? '');
 
     this.api = {
@@ -103,6 +114,7 @@ export class Controller {
       showComments: () => this.openPanel(),
       openThread: (id) => this.openThreadById(id),
       getUnreadCount: () => this.unreadCount(),
+      refreshSignIn: () => this.refreshAuth(),
       destroy: () => this.destroy(),
     };
 
@@ -144,6 +156,13 @@ export class Controller {
       onPick: (item) => this.pickFromPanel(item),
       onClose: () => this.closePanel(true),
     });
+    if (this.options.auth) {
+      this.signIn = new SignIn(this.doc, this.view.bar, this.labels, {
+        onPick: (p) => this.startSignIn(p),
+        onClose: () => this.closeSignIn(true),
+      });
+      this.globalOffs.push(this.listen(this.win, 'message', this.onAuthMessage as EventListener, {}));
+    }
     this.view.more.addEventListener('click', () => (this.menu?.isOpen ? this.closeMenu(true) : this.openMenu()));
     this.view.unread.addEventListener('click', () => (this.panel?.isOpen ? this.closePanel(true) : this.openPanel()));
     this.popover = new Popover(
@@ -193,7 +212,128 @@ export class Controller {
     }
 
     this.updateCount();
-    void this.loadComments().then(() => this.loadAll());
+    if (this.options.auth) void this.refreshAuth();
+    else void this.loadComments().then(() => this.loadAll());
+  }
+
+  // ---------------------------------------------------------------- sign-in (the `auth` option)
+
+  private authUrl(path: string): string {
+    return `${this.options.auth!.endpoint.replace(/\/+$/, '')}${path}`;
+  }
+
+  /** Comments are only loaded for a signed-in visitor (or without the `auth` option). */
+  private canLoad(): boolean {
+    return this.authState === 'off' || this.authState === 'in';
+  }
+
+  /** Ask the server who is signed in; load or forget comments accordingly. Returns true when signed in. */
+  private async refreshAuth(): Promise<boolean> {
+    if (!this.options.auth) return true;
+    let data: { user?: FeedbackAuthor | null; providers?: SignInProvider[] } = {};
+    try {
+      const res = await fetch(this.authUrl('/me'), { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+      if (res.ok) data = await res.json();
+    } catch (err) {
+      console.warn('[feedback] sign-in status failed', err);
+    }
+    if (this.destroyed) return false;
+    this.providers = Array.isArray(data.providers) ? data.providers.filter((p) => p && typeof p.id === 'string' && typeof p.label === 'string') : [];
+    const u = data.user && typeof data.user.id === 'string' ? data.user : null;
+    const was = this.authState;
+    if (u) {
+      this.authState = 'in';
+      const author: FeedbackAuthor = { id: u.id, name: u.name, ...(u.avatarUrl ? { avatarUrl: u.avatarUrl } : {}), ...(u.role === 'owner' ? { role: 'owner' } : {}) };
+      const before = this.me();
+      this.options.author = author;
+      const after = this.me();
+      if (was !== 'in') {
+        this.seen.setUser(after.id ?? ''); // "seen" marks are per user
+        void this.loadComments().then(() => this.loadAll());
+      }
+      else if (before.id !== after.id || before.role !== after.role || before.name !== after.name) this.onIdentityChange();
+      return true;
+    }
+    this.authState = 'out';
+    this.options.author = undefined;
+    if (was === 'in') this.forgetComments();
+    return false;
+  }
+
+  /** Signed out: no comments, pins or open threads of the previous user stay on screen. */
+  private forgetComments() {
+    if (this.popover?.isOpen) this.closePopover(false);
+    this.closePanel(false);
+    this.closeMenu(false);
+    this.setActive(false);
+    for (const c of this.comments) c.pin?.remove();
+    this.comments = [];
+    this.seen.setUser('');
+    this.renumber();
+    this.updateCount();
+    this.refreshUnread();
+    this.scheduleLayout();
+  }
+
+  private openSignIn(error?: string) {
+    if (!this.signIn || !this.view) return;
+    this.closeMenu(false);
+    this.closePanel(false);
+    this.signIn.open(this.providers, error ?? (this.providers.length ? undefined : this.labels.signInFailed));
+    this.view.setPopupOpen(true);
+  }
+
+  private closeSignIn(returnFocus: boolean) {
+    if (!this.signIn?.isOpen || !this.view) return;
+    this.signIn.close();
+    this.activateAfterSignIn = false;
+    this.view.setPopupOpen(!!this.menu?.isOpen || !!this.panel?.isOpen);
+    if (returnFocus) this.view.toggle.focus({ preventScroll: true });
+  }
+
+  private startSignIn(p: SignInProvider) {
+    const back = this.win.location.pathname + this.win.location.search + this.win.location.hash;
+    const url = this.authUrl(`/login/${encodeURIComponent(p.id)}?return=${encodeURIComponent(back)}`);
+    if (this.options.auth?.popup === false) {
+      this.win.location.assign(url);
+      return;
+    }
+    this.signIn?.showError();
+    const popup = this.win.open(`${url}&popup=1`, 'comenta-signin', 'popup,width=520,height=680');
+    if (!popup) this.signIn?.showError(this.labels.signInPopupBlocked);
+  }
+
+  /** The sign-in popup reports back (same origin only). */
+  private onAuthMessage = (e: MessageEvent) => {
+    let expected: string;
+    try {
+      expected = new URL(this.options.auth!.endpoint, this.win.location.href).origin;
+    } catch {
+      return;
+    }
+    const data = e.data as { type?: unknown; ok?: unknown; error?: unknown } | null;
+    if (e.origin !== expected || !data || data.type !== 'comenta:auth') return;
+    if (!data.ok) {
+      this.openSignIn(typeof data.error === 'string' ? data.error.slice(0, 300) : this.labels.signInFailed);
+      return;
+    }
+    const activate = this.activateAfterSignIn;
+    void this.refreshAuth().then((signedIn) => {
+      if (!signedIn) return this.openSignIn(this.labels.signInFailed);
+      this.closeSignIn(false);
+      if (activate) this.setActive(true);
+    });
+  };
+
+  private async signOut() {
+    this.closeMenu(false);
+    try {
+      await fetch(this.authUrl('/logout'), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    } catch (err) {
+      console.warn('[feedback] sign-out failed', err);
+    }
+    await this.refreshAuth();
+    this.view?.toggle.focus({ preventScroll: true });
   }
 
   private recordConfig(): RecordConfig | null {
@@ -243,7 +383,7 @@ export class Controller {
     if ('onError' in o) this.options.onError = o.onError;
     if ('onReply' in o) this.options.onReply = o.onReply;
     if ('onStatusChange' in o) this.options.onStatusChange = o.onStatusChange;
-    if ('author' in o) {
+    if ('author' in o && !this.options.auth) {
       const before = this.me();
       this.options.author = o.author;
       const after = this.me();
@@ -291,6 +431,14 @@ export class Controller {
 
   private setActive(on: boolean) {
     if (!this.view || this.destroyed && on) return;
+    if (on && (this.authState === 'out' || this.authState === 'unknown')) {
+      // not signed in: the sign-in card instead of comment mode
+      if (this.signIn?.isOpen) return this.closeSignIn(true);
+      this.activateAfterSignIn = true;
+      if (this.authState === 'unknown') void this.refreshAuth().then((inNow) => (inNow ? this.setActive(true) : this.openSignIn()));
+      else this.openSignIn();
+      return;
+    }
     if (on === this.active) return;
     this.active = on;
     this.view.setActive(on);
@@ -418,6 +566,9 @@ export class Controller {
     if (this.menu?.isOpen) {
       consume();
       this.closeMenu(true);
+    } else if (this.signIn?.isOpen) {
+      consume();
+      this.closeSignIn(true);
     } else if (this.panel?.isOpen) {
       consume();
       this.closePanel(true);
@@ -449,6 +600,7 @@ export class Controller {
     const path = e.composedPath();
     if (this.menu?.isOpen && !path.includes(this.menu.el) && !path.includes(this.view!.more)) this.closeMenu(false);
     if (this.panel?.isOpen && !path.includes(this.view!.bar)) this.closePanel(false);
+    if (this.signIn?.isOpen && !path.includes(this.view!.bar)) this.closeSignIn(false);
   };
 
   // ---------------------------------------------------------------- menu & panel
@@ -456,8 +608,10 @@ export class Controller {
   private openMenu() {
     if (!this.menu || !this.view) return;
     this.closePanel(false);
+    this.closeSignIn(false);
     const page = this.pageComments();
-    this.menu.open(page.length, this.pinsHidden, this.showResolved, page.filter((c) => c.payload.status === 'resolved').length);
+    const account = this.authState === 'in' ? { name: this.me().name ?? '', onSignOut: () => void this.signOut() } : undefined;
+    this.menu.open(page.length, this.pinsHidden, this.showResolved, page.filter((c) => c.payload.status === 'resolved').length, account);
     this.view.more.setAttribute('aria-expanded', 'true');
     this.view.setPopupOpen(true);
   }
@@ -472,6 +626,7 @@ export class Controller {
 
   private openPanel() {
     if (!this.panel || !this.view) return;
+    if (this.authState === 'out' || this.authState === 'unknown') return this.openSignIn();
     this.closeMenu(false);
     if (this.popover?.isOpen) this.closePopover(false);
     this.panel.open();
@@ -510,7 +665,7 @@ export class Controller {
   }
 
   private async loadAll() {
-    if (!this.adapter.listAll) return;
+    if (!this.adapter.listAll || !this.canLoad()) return;
     try {
       const all = await this.adapter.listAll();
       if (this.destroyed) return;
@@ -719,7 +874,7 @@ export class Controller {
 
   /** Re-read comments (polling, adapter push, tab became visible). */
   private async poll() {
-    if (this.polling || this.destroyed) return;
+    if (this.polling || this.destroyed || !this.canLoad()) return;
     this.polling = true;
     try {
       this.seen.reload();
@@ -852,6 +1007,8 @@ export class Controller {
       const msg = err instanceof Error && err.message ? err.message : String(err ?? '');
       popover.setError(msg ? `${this.labels.errorPrefix}: ${msg}` : this.labels.errorPrefix);
       this.options.onError?.(err, payload);
+      // the session ended meanwhile: ask to sign in again
+      if ((err as { status?: number })?.status === 401 && this.options.auth) void this.refreshAuth().then((signedIn) => signedIn || this.openSignIn());
       return;
     }
     if (this.destroyed) return;
@@ -866,7 +1023,7 @@ export class Controller {
   // ---------------------------------------------------------------- comments & pins
 
   private async loadComments() {
-    if (!this.adapter.list) return;
+    if (!this.adapter.list || !this.canLoad()) return;
     const url = this.url;
     try {
       const list = await this.adapter.list(this.win.location.href);
@@ -1026,7 +1183,7 @@ export function initFeedback(options: FeedbackOptions = {}): FeedbackInstance {
   if (typeof document === 'undefined') {
     // SSR: return an inert instance
     const noop = () => {};
-    return { open: noop, close: noop, toggle: noop, isOpen: () => false, update: noop, getComments: () => [], showComments: noop, openThread: () => false, getUnreadCount: () => 0, destroy: noop };
+    return { open: noop, close: noop, toggle: noop, isOpen: () => false, update: noop, getComments: () => [], showComments: noop, openThread: () => false, getUnreadCount: () => 0, refreshSignIn: () => Promise.resolve(false), destroy: noop };
   }
   current?.destroy();
   current = new Controller(options);

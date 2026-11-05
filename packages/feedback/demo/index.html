@@ -46,7 +46,7 @@
 
   <main>
     <h1>Демо: режим комментариев</h1>
-    <p class="muted">Нажмите облачко справа внизу (или клавишу C), наведите на элемент, кликните и оставьте заметку. Шеврон рядом открывает меню со списком комментариев. На комментарий можно ответить: откройте его пин, переключите пользователя в настройках ниже и продолжите переписку. В форме есть кнопка записи как в Telegram: нажатие переключает микрофон ⇄ экран, удержание начинает запись (до 1 минуты).</p>
+    <p class="muted">Нажмите облачко справа внизу (или клавишу C), наведите на элемент, кликните и оставьте заметку. Шеврон рядом открывает меню со списком комментариев. Комментировать могут только вошедшие (Google, Яндекс, Keycloak; в демо тестовый вход). На комментарий можно ответить: откройте его пин, войдите другим пользователем в настройках ниже и продолжите переписку. В форме есть кнопка записи как в Telegram: нажатие переключает микрофон ⇄ экран, удержание начинает запись (до 1 минуты).</p>
 
     <section class="controls" data-feedback-ignore>
       <h2>Настройки демо (не комментируется: data-feedback-ignore)</h2>
@@ -57,13 +57,13 @@
           <option value="console">console + localStorage</option>
         </select>
       </label>
-      <label>Я:
-        <select id="user">
-          <option value="vladimir">Владимир (владелец: может решать любые треды)</option>
-          <option value="anna">Анна (участник)</option>
-          <option value="guest">Гость (сайт не передал автора)</option>
-        </select>
-      </label>
+      <p>Вход: <span id="who">…</span>
+        <span id="mock-users" hidden>· тестовый вход как
+          <a href="/api/auth/login/keycloak?login_hint=vladimir&amp;return=/" data-user="vladimir">Владимир (владелец)</a>,
+          <a href="/api/auth/login/keycloak?login_hint=anna&amp;return=/" data-user="anna">Анна</a>,
+          <a href="/api/auth/login/keycloak?login_hint=boris&amp;return=/" data-user="boris">Борис</a></span>
+        <button id="logout" type="button" hidden>Выйти</button>
+      </p>
       <label><input type="checkbox" id="hostile-toggle" /> Враждебные стили (<code>* { all: unset }</code>, <code>button {}</code>)</label>
       <div id="log"></div>
     </section>
@@ -133,15 +133,9 @@
       const el = document.getElementById('log');
       el.textContent = `${new Date().toLocaleTimeString()} ${msg}\n` + el.textContent;
     };
-    // separate server-side stores per test run (set by the e2e tests); everyone else shares one
-    // demo only: tells the server who is looking (GitHub state and comments are for the owner and the
-    // comment's author); a real site's backend knows who is signed in
-    const guestId = () => { try { return JSON.parse(localStorage.getItem('comenta:guest') ?? 'null')?.id; } catch { return undefined; } };
-    const headers = () => {
-      const u = users[userSelect.value];
-      const id = u?.id ?? guestId();
-      return { 'X-Comenta-Space': window.__comentaSpace ?? 'default', ...(u?.role === 'owner' ? { 'X-Comenta-Role': 'owner' } : {}), ...(id ? { 'X-Comenta-User': id } : {}) };
-    };
+    // separate server-side stores per test run (set by the e2e tests); everyone else shares one.
+    // Who is writing comes from the sign-in session on the server (Google, Yandex, Keycloak; demo/auth.mjs).
+    const headers = () => ({ 'X-Comenta-Space': window.__comentaSpace ?? 'default' });
     const adapters = {
       http: () => httpAdapter({ endpoint: '/api/feedback', headers }),
       fail: () => httpAdapter({ endpoint: '/api/feedback?fail=1', headers }),
@@ -151,31 +145,32 @@
     const params = new URLSearchParams(location.search);
     select.value = params.get('adapter') ?? 'http';
 
-    // Switch users to try a conversation in one browser (the widget's `update({ author })`).
-    const users = {
-      vladimir: { id: 'vladimir', name: 'Владимир', role: 'owner' },
-      anna: { id: 'anna', name: 'Анна' },
-      guest: undefined,
-    };
-    const userSelect = document.getElementById('user');
-    let saved = null;
-    try { saved = localStorage.getItem('comenta-demo-user'); } catch {}
-    userSelect.value = params.get('user') ?? (saved && saved in users ? saved : 'vladimir');
-
     window.fb = initFeedback({
       adapter: adapters[select.value](),
-      author: users[userSelect.value],
+      // the console adapter keeps everything in this browser: no server, no sign-in
+      auth: select.value === 'console' ? undefined : { endpoint: '/api/auth' },
       pollIntervalMs: Number(params.get('poll')) || 30000,
       onSubmit: (p) => { window.__lastPayload = p; log(`отправлено: ${p.kind ?? 'без категории'} → ${p.target.selector}`); },
       onReply: (r) => { window.__lastReply = r; log(`ответ от ${r.author?.name ?? 'гостя'}: ${r.text}`); },
       onStatusChange: (p, c) => log(`тред #${p.id.slice(0, 4)}: ${c.status === 'resolved' ? 'решён' : 'открыт снова'}`),
       onError: (e) => log(`ошибка: ${e.message}`),
     });
-    select.addEventListener('change', () => window.fb.update({ adapter: adapters[select.value]() }));
-    userSelect.addEventListener('change', () => {
-      try { localStorage.setItem('comenta-demo-user', userSelect.value); } catch {}
-      window.fb.update({ author: users[userSelect.value] });
-      log(`теперь вы: ${userSelect.options[userSelect.selectedIndex].text}`);
+    select.addEventListener('change', () => {
+      const p = new URLSearchParams(location.search);
+      p.set('adapter', select.value);
+      location.search = p.toString(); // the sign-in option is set at start
+    });
+
+    const who = document.getElementById('who');
+    const logout = document.getElementById('logout');
+    fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((me) => {
+      who.textContent = me.user ? `${me.user.name}${me.user.role === 'owner' ? ' (владелец)' : ''}` : 'не выполнен';
+      document.getElementById('mock-users').hidden = !me.mock;
+      logout.hidden = !me.user;
+    }).catch(() => { who.textContent = '?'; });
+    logout.addEventListener('click', async () => {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      location.reload();
     });
 
     document.getElementById('hostile-toggle').addEventListener('change', (e) => {

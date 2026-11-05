@@ -23,7 +23,7 @@ export const widget = (page: Page) => ({
   resolveBtn: page.locator('comenta-feedback .ph-resolve'),
   status: page.locator('comenta-feedback .ph-status'),
   unread: page.locator('comenta-feedback .ph-unread'),
-  userSelect: page.locator('#user'),
+  signInCard: page.locator('comenta-feedback .ph-signin'),
 });
 
 const spaced = new WeakSet<Page>();
@@ -37,8 +37,28 @@ export async function useSpace(page: Page, space = `t-${Math.random().toString(3
   }, space);
 }
 
-export async function openDemo(page: Page, query = '') {
+/** Test users of the fake sign-in (demo/auth-mock.mjs). Владимир is the site owner. */
+export type MockUser = 'vladimir' | 'anna' | 'boris';
+
+/**
+ * Sign in to the demo site through a fake provider (`login_hint` skips the picker). The session cookie lands in the
+ * page's browser context. Call before `openDemo`, or reload the page afterwards: the widget reads the user on start.
+ */
+export async function signIn(page: Page, user: MockUser = 'vladimir', provider: 'google' | 'yandex' | 'keycloak' = 'keycloak') {
+  const res = await page.request.get(`/api/auth/login/${provider}?login_hint=${user}&return=/demo/settings.html`);
+  expect(res.ok()).toBe(true);
+  const me = await (await page.request.get('/api/auth/me')).json();
+  expect(me.user?.id).toBe(`${provider}:u-${user}`);
+}
+
+export async function signOut(page: Page) {
+  await page.request.post('/api/auth/logout');
+}
+
+/** Open the demo signed in (as Владимир, the owner, unless `user` says otherwise; `null`: not signed in). */
+export async function openDemo(page: Page, query = '', user: MockUser | null = 'vladimir') {
   await useSpace(page);
+  if (user) await signIn(page, user);
   await page.goto(`/${query}`);
   await expect(widget(page).toggle).toBeVisible();
 }

@@ -1,8 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
-import { comment, openDemo, useSpace, widget } from './helpers';
+import { comment, openDemo, signIn, useSpace, widget, type MockUser } from './helpers';
 
-const asUser = async (page: Page, user: 'vladimir' | 'anna' | 'guest') => {
-  await widget(page).userSelect.selectOption(user);
+/** Sign in as someone else in the same browser and let the widget re-read the session (an open thread stays open). */
+const asUser = async (page: Page, user: MockUser) => {
+  await signIn(page, user);
+  expect(await page.evaluate(() => (window as unknown as { fb: { refreshSignIn(): Promise<boolean> } }).fb.refreshSignIn())).toBe(true);
 };
 
 /** Reply in the open thread; resolves with the POSTed reply. */
@@ -31,7 +33,7 @@ test.describe('threads', () => {
     await expect(w.msgs.first()).not.toHaveClass(/ph-mine/);
     await expect(w.msgs.first().locator('.ph-msg-name')).toHaveText('Владимир');
     const r = await reply(page, 'Это двойной клик, уточню');
-    expect(r).toMatchObject({ commentId: payload.id, text: 'Это двойной клик, уточню', author: { id: 'anna', name: 'Анна' } });
+    expect(r).toMatchObject({ commentId: payload.id, text: 'Это двойной клик, уточню', author: { id: 'keycloak:u-anna', name: 'Анна' } });
     await expect(w.msgs).toHaveCount(2);
     await expect(w.msgs.nth(1)).toHaveClass(/ph-mine/);
 
@@ -57,7 +59,7 @@ test.describe('threads', () => {
   });
 
   test('"reply and resolve" closes the thread; a later reply keeps it resolved; reopen by button', async ({ page }) => {
-    await openDemo(page, '?user=anna');
+    await openDemo(page, '', 'anna');
     const w = widget(page);
     await comment(page, '#inc', 'Кнопка не работает');
     await asUser(page, 'vladimir');
@@ -65,7 +67,7 @@ test.describe('threads', () => {
     await expect(w.status).toHaveText('Открыт');
     const statusReq = page.waitForRequest((r) => /\/api\/feedback\/[^/]+$/.test(r.url()) && r.method() === 'PATCH');
     await reply(page, 'Готово, поправили', true);
-    expect((await statusReq).postDataJSON()).toMatchObject({ status: 'resolved', by: { id: 'vladimir', role: 'owner' } });
+    expect((await statusReq).postDataJSON()).toMatchObject({ status: 'resolved', by: { id: 'keycloak:u-vladimir', role: 'owner' } });
     await expect(w.status).toHaveText('Закрыт');
     await expect(page.locator('comenta-feedback .ph-event')).toContainText('Вы закрыли');
     await expect(w.replyResolveBtn).toBeHidden();
@@ -161,7 +163,7 @@ test.describe('threads', () => {
   });
 
   test('unread: counter on the toggle, dot on the pin, bold row; cleared when the thread is opened', async ({ page }) => {
-    await openDemo(page, '?user=anna');
+    await openDemo(page, '', 'anna');
     const w = widget(page);
     await comment(page, '#inc', 'Где настройки?');
     await expect(w.unread).toBeHidden(); // my own fresh comment is not "new"
@@ -190,12 +192,10 @@ test.describe('threads', () => {
     const b = await (await browser.newContext()).newPage();
     await useSpace(a, space);
     await useSpace(b, space);
-    // same page URL in both browsers (comments belong to a URL); users picked via the demo's saved choice
-    await a.addInitScript(() => localStorage.setItem('comenta-demo-user', 'anna'));
-    await b.addInitScript(() => localStorage.setItem('comenta-demo-user', 'vladimir'));
-    await openDemo(a, '?poll=500');
+    // same page URL in both browsers (comments belong to a URL), a different person signed in in each
+    await openDemo(a, '?poll=500', 'anna');
     await comment(a, '#inc', 'Ждём ответа');
-    await openDemo(b, '?poll=500');
+    await openDemo(b, '?poll=500', 'vladimir');
     const wb = widget(b);
     await wb.pins.first().click();
     await reply(b, 'Отвечаю из другого браузера');
@@ -212,8 +212,8 @@ test.describe('threads', () => {
     await b.context().close();
   });
 
-  test('guest is asked for a name once, then it is remembered', async ({ page }) => {
-    await openDemo(page, '?user=guest');
+  test('without the sign-in option (console adapter) a guest is asked for a name once, then it is remembered', async ({ page }) => {
+    await openDemo(page, '?adapter=console', null);
     const w = widget(page);
     await w.toggle.click();
     await page.locator('#inc').click();
@@ -221,9 +221,9 @@ test.describe('threads', () => {
     await expect(name).toBeVisible();
     await name.fill('Ира');
     await w.textarea.fill('Комментарий гостя');
-    const req = page.waitForRequest((r) => r.url().endsWith('/api/feedback') && r.method() === 'POST');
     await w.submit.click();
-    const payload = (await req).postDataJSON();
+    await expect(w.pins).toHaveCount(1);
+    const payload = await page.evaluate(() => (window as unknown as { __lastPayload: { author: { id: string; name: string } } }).__lastPayload);
     expect(payload.author.name).toBe('Ира');
     expect(payload.author.id).toMatch(/^guest-/);
 

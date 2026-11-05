@@ -73,3 +73,4 @@ export const trashIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M2.5 4.5h11M
 export const checkIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M3 8.5 6.5 12 13 4.5', '1.7');
 export const reopenIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3', '1.5');
 export const pencilIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M10.5 2.5l3 3L6 13H3v-3z', '1.5');
+export const signOutIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6M10.5 11 13.5 8l-3-3M13.5 8H6', '1.5');

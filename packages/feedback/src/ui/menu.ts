@@ -1,5 +1,5 @@
 import type { FeedbackLabels, FeedbackPayload } from '../types';
-import { checkIcon, closeIcon, eyeIcon, eyeOffIcon, h, listIcon } from './h';
+import { checkIcon, closeIcon, eyeIcon, eyeOffIcon, h, listIcon, signOutIcon } from './h';
 import { displayName } from './thread';
 import { formatDuration } from '../core/recorder';
 
@@ -28,7 +28,7 @@ export class Menu {
     return !this.el.hidden;
   }
 
-  open(count: number, pinsHidden: boolean, showResolved: boolean, resolvedCount: number) {
+  open(count: number, pinsHidden: boolean, showResolved: boolean, resolvedCount: number, account?: { name: string; onSignOut: () => void }) {
     const d = this.doc;
     const item = (icon: SVGSVGElement, text: string, onClick: () => void, extra?: string, cls = '') => {
       const b = h(d, 'button', { type: 'button', role: 'menuitem', class: `ph-mi ${cls}`, tabindex: -1 }, [
@@ -43,6 +43,7 @@ export class Menu {
       item(listIcon(d), this.labels.showAll, this.handlers.onShowAll, String(count), 'ph-mi-all'),
       item(pinsHidden ? eyeIcon(d) : eyeOffIcon(d), pinsHidden ? this.labels.showPins : this.labels.hidePins, this.handlers.onTogglePins, undefined, 'ph-mi-pins'),
       item(checkIcon(d), showResolved ? this.labels.hideResolved : this.labels.showResolved, this.handlers.onToggleResolved, String(resolvedCount), 'ph-mi-resolved'),
+      ...(account ? [item(signOutIcon(d), this.labels.signOut, account.onSignOut, account.name, 'ph-mi-signout')] : []),
     );
     this.el.hidden = false;
     this.items()[0]?.focus({ preventScroll: true });

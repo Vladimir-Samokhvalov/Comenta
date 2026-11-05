@@ -101,17 +101,25 @@ export const STYLES = /* css */ `
 .ph-bar[data-popup] .ph-tip { display: none; }
 
 /* Popups anchored to the bar: open upwards for bottom positions, downwards for top ones */
-.ph-menu, .ph-panel {
+.ph-menu, .ph-panel, .ph-signin {
   position: absolute; right: 0; bottom: calc(100% + 8px);
   background: var(--ph-bg); color: var(--ph-ink);
   border: 1px solid var(--ph-line); border-radius: 12px;
   box-shadow: var(--ph-shadow);
 }
 .ph-pos-top-right .ph-menu, .ph-pos-top-right .ph-panel, .ph-pos-top-left .ph-menu, .ph-pos-top-left .ph-panel,
+.ph-pos-top-right .ph-signin, .ph-pos-top-left .ph-signin,
 .ph-pos-top-right .ph-tip, .ph-pos-top-left .ph-tip { bottom: auto; top: calc(100% + 8px); }
 .ph-pos-bottom-left .ph-menu, .ph-pos-bottom-left .ph-panel, .ph-pos-top-left .ph-menu, .ph-pos-top-left .ph-panel,
+.ph-pos-bottom-left .ph-signin, .ph-pos-top-left .ph-signin,
 .ph-pos-bottom-left .ph-tip, .ph-pos-top-left .ph-tip { right: auto; left: 0; }
 
+.ph-signin { width: 300px; max-width: calc(100vw - 40px); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.ph-signin-head { display: flex; align-items: flex-start; gap: 8px; }
+.ph-signin-title { flex: 1; font-weight: 600; font-size: 14px; }
+.ph-signin-hint { color: var(--ph-muted); font-size: 12px; margin: 0; }
+.ph-signin .ph-btn { width: 100%; justify-content: center; }
+.ph-signin-error { color: var(--ph-danger, #c62828); font-size: 12px; margin: 0; }
 .ph-menu { min-width: 240px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .ph-mi {
   display: flex; align-items: center; gap: 10px; width: 100%;

@@ -88,6 +88,9 @@ export const SETTINGS_STYLES = /* css */ `
 .cs-note-warn { background: var(--cs-warn-bg); color: var(--cs-warn); }
 .cs-note-ok { background: rgba(var(--cs-ok-rgb), .10); color: var(--cs-ok); }
 .cs-note-info { background: var(--cs-soft); color: var(--cs-muted); border: 1px solid var(--cs-line); }
+.cs-site { gap: 10px; }
+.cs-site-login { text-decoration: none; }
+.cs-site-logout { align-self: flex-start; }
 .cs-note .cs-btn { height: 28px; font-size: 12px; padding: 0 10px; flex: none; }
 .cs-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 4px; }
 .cs-saved { font-size: 13px; color: var(--cs-muted); margin: 10px 0 0; padding-top: 12px; border-top: 1px solid var(--cs-line); }

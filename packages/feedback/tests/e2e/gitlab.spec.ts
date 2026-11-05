@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { widget } from './helpers';
+import { signIn as signInSite, widget, type MockUser } from './helpers';
 
 // The demo server runs with GITLAB_MOCK=1: a fake GitLab lives at /__gitlab (demo/gitlab-mock.mjs) and is
 // treated as a self-hosted instance with an OAuth application. Its state is global, so this file runs serially.
@@ -84,6 +84,7 @@ async function leaveComment(page: Page, text: string, path = '/') {
 test.beforeEach(async ({ page, context }) => {
   await page.request.post('/__gitlab/reset');
   await useSpace(page, context);
+  await signInSite(page, 'vladimir'); // the tracker settings are for the site owner
 });
 
 test.describe('GitLab settings', () => {
@@ -470,10 +471,10 @@ test.describe('GitLab issue ↔ thread sync', () => {
     const visitor = async (user: string) => {
       const ctx = await browser.newContext();
       const p = await ctx.newPage();
-      await p.addInitScript(([sp, u]) => {
+      await p.addInitScript((sp) => {
         (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
-        localStorage.setItem('comenta-demo-user', u);
-      }, [space, user] as const);
+      }, space);
+      await signInSite(p, (user === 'guest' ? 'boris' : user) as MockUser); // "guest": another signed-in visitor
       return { ctx, p };
     };
     const anna = await visitor('anna');

@@ -8,3 +8,4 @@ packages/feedback/demo/github.json
 packages/feedback/demo/github-app.json
 packages/feedback/demo/gitlab.json
 packages/feedback/demo/gitlab-apps.json
+packages/feedback/demo/auth.json
