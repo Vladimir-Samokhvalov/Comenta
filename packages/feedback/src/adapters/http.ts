@@ -1,4 +1,4 @@
-import type { FeedbackAdapter, FeedbackFile, FeedbackPayload, FeedbackSubmitResult } from '../types';
+import type { FeedbackAdapter, FeedbackFile, FeedbackIssueLink, FeedbackPayload, FeedbackSubmitResult } from '../types';
 
 type HeadersInput = Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
 
@@ -40,7 +40,8 @@ export class FeedbackHttpError extends Error {
  *
  * Multipart bodies carry field `payload` (the JSON) plus one file per attachment named
  * `file:<attachment id>`. If the server answers with JSON `{ "attachments": { "<id>": "<url>" } }`,
- * those URLs are used for playback. GET may answer with an array or `{ "items": [...] }`.
+ * those URLs are used for playback. A POST answer may carry `{ "issue": { provider, repo, number, url } }`
+ * (the issue the backend created); the thread then links to it. GET may answer with an array or `{ "items": [...] }`.
  */
 export function httpAdapter(options: HttpAdapterOptions): FeedbackAdapter {
   const { endpoint, credentials = 'same-origin', timeoutMs = 15000 } = options;
@@ -82,11 +83,14 @@ export function httpAdapter(options: HttpAdapterOptions): FeedbackAdapter {
     return res;
   }
 
+  /** `{ attachments: { id: url }, issue: {...} }` from the answer, when the server sent them. */
   async function fileUrls(res: Response, files: FeedbackFile[]): Promise<void | FeedbackSubmitResult> {
-    if (!files.length) return;
     try {
-      const data = (await res.json()) as { attachments?: Record<string, string> };
-      if (data && typeof data.attachments === 'object') return { attachmentUrls: data.attachments };
+      const data = (await res.json()) as { attachments?: Record<string, string>; issue?: FeedbackIssueLink };
+      const out: FeedbackSubmitResult = {};
+      if (files.length && data && typeof data.attachments === 'object' && data.attachments) out.attachmentUrls = data.attachments;
+      if (data?.issue && typeof data.issue.url === 'string') out.issue = data.issue;
+      return out.attachmentUrls || out.issue ? out : undefined;
     } catch {
       /* no JSON body: fine */
     }

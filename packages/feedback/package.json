@@ -21,15 +21,27 @@
       "import": "./dist/react.js",
       "require": "./dist/react.cjs"
     },
-    "./iife": "./dist/feedback.iife.js"
+    "./github": {
+      "types": "./dist/types/github/index.d.ts",
+      "import": "./dist/github.js",
+      "require": "./dist/github.cjs"
+    },
+    "./settings": {
+      "types": "./dist/types/settings/index.d.ts",
+      "import": "./dist/settings.js",
+      "require": "./dist/settings.cjs"
+    },
+    "./iife": "./dist/feedback.iife.js",
+    "./settings-iife": "./dist/settings.iife.js"
   },
   "sideEffects": false,
   "scripts": {
-    "build": "vite build && vite build --config vite.iife.config.ts && tsc -p tsconfig.build.json",
+    "build": "vite build && vite build --config vite.iife.config.ts && vite build --config vite.settings.config.ts && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "pnpm build && playwright test",
     "demo": "pnpm build && node demo/server.mjs",
+    "demo:github": "pnpm build && GITHUB_MOCK=1 node demo/server.mjs",
     "size": "node scripts/size.mjs",
     "standalone": "pnpm build && node scripts/standalone.mjs"
   },

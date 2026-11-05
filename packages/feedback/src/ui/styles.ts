@@ -323,6 +323,9 @@ export const STYLES = /* css */ `
 .ph-spacer { flex: 1; }
 .ph-status { font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 10px; font-weight: 500; background: rgba(var(--ph-accent-rgb), .12); color: var(--ph-accent); white-space: nowrap; }
 .ph-status[data-status="resolved"] { background: rgba(var(--ph-ok-rgb), .14); color: var(--ph-ok); }
+.ph-issue { font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 10px; color: var(--ph-muted); background: var(--ph-hover); text-decoration: none; white-space: nowrap; font-weight: 500; }
+.ph-issue:hover { color: var(--ph-ink); background: var(--ph-pressed); }
+.ph-issue:focus-visible { outline: 2px solid var(--ph-accent); outline-offset: 1px; }
 .ph-resolve[data-status="open"]:hover { color: var(--ph-ok); }
 .ph-feed { display: flex; flex-direction: column; gap: 6px; padding: 10px 10px 12px; max-height: min(340px, 50vh); overflow-y: auto; background: var(--ph-chat); overscroll-behavior: contain; }
 .ph-feed:focus-visible { outline: 2px solid var(--ph-accent); outline-offset: -2px; }

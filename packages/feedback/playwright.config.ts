@@ -22,6 +22,12 @@ export default defineConfig({
       PORT: String(PORT),
       FEEDBACK_LOG: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-feedback.log`,
       FEEDBACK_UPLOADS: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-uploads`,
+      // fake GitHub at /__github (demo/github-mock.mjs); fast retries
+      GITHUB_MOCK: '1',
+      GITHUB_STORE: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-github-${Date.now()}.json`,
+      COMENTA_GITHUB_RETRY_MS: '20',
+      COMENTA_GITHUB_BACKOFF_MS: '300',
+      COMENTA_GITHUB_DRAIN_MS: '400',
     },
   },
 });

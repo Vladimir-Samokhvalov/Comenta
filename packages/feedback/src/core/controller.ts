@@ -814,6 +814,7 @@ export class Controller {
     try {
       const result = await this.adapter.submit(payload, files);
       stored = this.withUrls(payload, files, result);
+      if (result && result.issue) stored = { ...stored, issue: result.issue };
     } catch (err) {
       if (this.destroyed || this.popover !== popover) return;
       popover.setSubmitting(false);

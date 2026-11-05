@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Comenta — настройки GitHub</title>
+  <style>
+    body { margin: 0; font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #f6f5f1; color: #1f1e1d; }
+    .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: #111827; color: #fff; }
+    .topbar a { color: #fff; }
+    main { max-width: 600px; margin: 0 auto; padding: 32px 16px 80px; }
+    h1 { font-size: 24px; margin: 0 0 6px; }
+    p.muted { color: #73726c; margin: 0 0 20px; }
+    @media (prefers-color-scheme: dark) { body { background: #1a1a18; color: #f2f0ea; } p.muted { color: #a6a39b; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/">← Демо виджета</a>
+    <span>Настройки</span>
+  </header>
+  <main>
+    <h1>Комментарии → GitHub issues</h1>
+    <p class="muted">Эту страницу видит только владелец сайта. Подключите GitHub один раз: дальше каждый комментарий посетителей станет issue в выбранном репозитории.</p>
+    <comenta-settings endpoint="/api/github"></comenta-settings>
+  </main>
+  <script type="module">
+    import { defineSettingsElement } from '/dist/settings.js';
+    const el = document.querySelector('comenta-settings');
+    // separate server-side stores per test run (set by the e2e tests); everyone else shares one
+    el.headers = () => (window.__comentaSpace ? { 'X-Comenta-Space': window.__comentaSpace } : {});
+    defineSettingsElement();
+    el.addEventListener('comenta-settings-save', (e) => console.log('[settings] saved', e.detail));
+  </script>
+</body>
+</html>

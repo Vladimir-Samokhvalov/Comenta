@@ -7,6 +7,7 @@
 * UI в Shadow DOM: стили сайта не ломают виджет, стили виджета не текут на сайт.
 * Транспорт за интерфейсом `FeedbackAdapter`: HTTP и console/localStorage из коробки, свой пишется в 10 строк.
 * React-обёртка и `<script>`-бандл с автоинициализацией.
+* Интеграция с GitHub: комментарии становятся issues (с записями и Project v2), страница настроек `<comenta-settings>`.
 
 ## Подключение
 
@@ -124,6 +125,7 @@ interface FeedbackPayload {
   resolvedBy?: { id?: string; name?: string };
   resolvedAt?: string;
   replies?: FeedbackReply[];     // приходит из list(); в submit не отправляется
+  issue?: { provider: 'github'; repo: string; number: number; url: string }; // ставит сервер (см. «GitHub»)
   attachments?: Array<{
     id: string;
     kind: 'audio' | 'screen';   // голосовое | запись экрана с голосом
@@ -200,14 +202,115 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 
 Сообщение из `Error` показывается пользователю после «Не удалось отправить: ».
 
+## GitHub: комментарии → issues
+
+Владелец сайта один раз подключает GitHub на странице настроек, и дальше каждый комментарий (в том числе гостевой) становится issue в выбранном репозитории и, по желанию, попадает в GitHub Project. Токен живёт только на вашем сервере: браузер получает лишь сессионную cookie.
+
+```
+посетитель ──comment──▶ ваш сервер ──token──▶ GitHub: issue, вложения, Project v2
+владелец ──<comenta-settings>──▶ ваш сервер (/api/github/*) ──OAuth──▶ GitHub
+```
+
+Три части:
+
+* `@comenta/feedback/github` — серверный модуль (Node 18+, Deno, Bun, edge: нужен только `fetch`): OAuth, списки репозиториев и проектов, создание issue. В браузер его не отдавайте.
+* `@comenta/feedback/settings` — компонент `<comenta-settings>` для страницы владельца (или `settings.iife.js` тегом `<script>`). В бандл виджета для посетителей он не входит.
+* Ваш сервер связывает их. Рабочий пример без зависимостей: [`demo/github.mjs`](demo/github.mjs) (его подключает `demo/server.mjs`).
+
+### Что попадает в issue
+
+* **Заголовок** — первые слова комментария (до 72 символов, по границе слова) с эмодзи категории: `😢 Кнопка оплаты не нажимается…`. Без текста: `Голосовой комментарий: <заголовок страницы>`.
+* **Тело** — текст; ссылки на записи `🎙 Голос, 0:42` / `🎥 Экран, 0:58` (картинки вставляются в тело); таблица: страница, селектор элемента, текст элемента, автор, размер экрана, браузер, время; ссылка «открыть комментарий на странице» (`#comenta=<id>`) и скрытая метка `<!-- comenta:id=<id> -->`.
+* Только стандартные поля: без меток и исполнителей. `@упоминания` и `#123` из текста гостей обезврежены (не пингуют людей), подделать метку нельзя.
+* **Записи** загружаются через Contents API в ветку `comenta-attachments` (создаётся как orphan-ветка, код не копирует), по папке на комментарий: `comenta/<id>/voice-….webm`.
+* **Проект**: issue добавляется в выбранный Project v2 (`addProjectV2ItemById`). Если это не удалось, issue остаётся, а ошибка видна в настройках.
+* **Идемпотентность**: повторная отправка того же комментария issue не дублирует. Сервер хранит ссылку на issue в комментарии; при повторной попытке после сбоя модуль сначала ищет issue по метке, а уже загруженные файлы не перезаливает. POST создания issue никогда не повторяется вслепую.
+* Ссылка на issue возвращается виджету (`{ issue }` в ответе на POST и в `GET`), и в шапке треда появляется `GitHub #12`.
+
+### Подключение на своём сервере
+
+1. Создайте OAuth App: GitHub → Settings → Developer settings → OAuth Apps. Callback URL: `https://ваш-сайт/api/github/auth/callback`.
+2. Задайте переменные окружения `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (и `PUBLIC_URL`, если сервер стоит за прокси).
+3. Реализуйте маршруты, которые ждёт `<comenta-settings>` (пример — `demo/github.mjs`):
+
+| Маршрут | Что делает |
+|---|---|
+| `GET {endpoint}/status` | `{ oauth, pat, connected, reason?: 'expired', account?, config?, missingScopes?, sync? }` |
+| `GET {endpoint}/auth/login?return=` | редирект на GitHub (`authorizeUrl`, `state` в cookie) |
+| `GET {endpoint}/auth/callback` | проверка `state`, `exchangeCode`, токен — в хранилище, браузеру — HttpOnly cookie |
+| `POST {endpoint}/auth/token` | `{ token }`: personal access token (для локальной разработки) |
+| `POST {endpoint}/auth/logout` | `revokeGrant` + удаление токена |
+| `GET {endpoint}/repos` | `{ items }` из `listRepos` (только где есть права на запись) |
+| `GET {endpoint}/projects?owner=` | `{ items }` из `listProjects` |
+| `PUT {endpoint}/config` | `{ repo: 'owner/name', projectId }` → `checkRepo` → `{ config }` |
+
+Ошибки — `{ error: { code, message } }`; `code: 'unauthorized'` компонент понимает как «войдите заново».
+
+4. В обработчике нового комментария вызовите `syncComment`:
+
+```ts
+import { GitHubClient, GitHubError, syncComment } from '@comenta/feedback/github';
+
+const gh = new GitHubClient({ token: owner.token });
+try {
+  const issue = await syncComment(gh, { owner: 'acme', repo: 'site', projectId: owner.projectId }, payload, files, {
+    checkExisting: attempt > 0, // на повторах искать уже созданный issue
+  });
+  comment.issue = issue; // { provider: 'github', repo, number, url, nodeId, projectId? }
+} catch (e) {
+  if (e instanceof GitHubError && e.retryable) queueRetry(comment); // сеть, 5xx, rate limit (e.resetAt)
+  else if (e instanceof GitHubError && e.code === 'unauthorized') markTokenExpired(); // покажется «Войти заново»
+  else reportToOwner(e.message); // нет прав, issues выключены…
+}
+```
+
+`files` — `{ attachment, data }`, где `data` — `Uint8Array`, `ArrayBuffer` или `Blob`.
+
+5. Страница настроек:
+
+```html
+<script type="module">
+  import { defineSettingsElement } from '@comenta/feedback/settings';
+  defineSettingsElement();
+</script>
+<comenta-settings endpoint="/api/github"></comenta-settings>
+```
+
+Свойство `el.headers` добавляет заголовки (например CSRF-токен). События: `comenta-settings-save` (detail — настройки), `comenta-settings-logout`. Защитите эту страницу собственной авторизацией администратора: демо пускает того, кто подключил GitHub первым (или логины из `COMENTA_GITHUB_OWNERS`).
+
+### Права
+
+OAuth App запрашивает `repo` (issues и загрузка записей, в том числе в приватных репозиториях), `project` (Projects v2), `read:org` (проекты и репозитории организаций), `read:user`. Если какого-то права нет, настройки скажут, какого именно, и предложат войти заново. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
+
+### Ошибки и как их видит владелец
+
+| Ситуация | Что происходит |
+|---|---|
+| Не вошёл | Кнопка «Войти через GitHub»; без OAuth на сервере — форма для токена |
+| Токен истёк или отозван | Баннер «Доступ к GitHub истёк…», кнопка «Войти заново». Комментарии копятся в очереди и уходят после входа; выбранный репозиторий сохраняется |
+| Не хватает прав | Предупреждение со списком прав; репозиторий без прав на запись или с выключенными issues не сохраняется, с понятной причиной |
+| Нет репозиториев / проектов | Подсказка вместо пустого списка; проект необязателен |
+| Сеть, 5xx | Безопасные запросы повторяются 3 раза с паузой; комментарий сохраняется у вас и уходит в GitHub позже (очередь с нарастающей паузой) |
+| Rate limit | «GitHub временно ограничил число запросов. Попробуйте через N мин.» и кнопка «Повторить»; короткий `Retry-After` выжидается автоматически |
+| Выход | Токен отзывается на GitHub и удаляется с сервера; новые комментарии остаются только у вас |
+
+### Попробовать без GitHub
+
+```bash
+pnpm demo:github    # тестовый GitHub на /__github: вход, репозитории, проекты, issues
+```
+
+Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. С настоящим GitHub: `GITHUB_CLIENT_ID=… GITHUB_CLIENT_SECRET=… pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
+
 ## Разработка
 
 ```bash
 pnpm install
 pnpm build          # dist/: ESM, CJS, IIFE, .d.ts
-pnpm test           # unit (Vitest + jsdom): селектор, санитизация, позиционирование, адаптеры, lifecycle, React
-pnpm test:e2e       # build + Playwright по демо-странице
+pnpm test           # unit (Vitest + jsdom): селектор, санитизация, позиционирование, адаптеры, lifecycle, React, GitHub
+pnpm test:e2e       # build + Playwright по демо-странице и настройкам GitHub (тестовый GitHub)
 pnpm demo           # http://localhost:5174 — демо + мок-сервер
+pnpm demo:github    # то же с тестовым GitHub (настройки: /demo/settings.html)
 pnpm size           # gzip-размеры, бюджет 30 КБ
 pnpm standalone     # dist/demo-standalone.html: демо одним файлом, открывается двойным кликом
 ```
@@ -222,14 +325,17 @@ src/
   selector/   генерация селектора, эвристики хэшей, санитизация и описание элемента
   ui/         shadow-root: плашка с кнопками, меню и список комментариев, подсветка, поповер (форма и тред), поле ввода с записью, тост, стили, тексты
   adapters/   http, console/localStorage
+  github/     серверная интеграция: клиент (повторы, ошибки), OAuth, репозитории и проекты, текст issue, синхронизация
+  settings/   <comenta-settings>: страница настроек GitHub для владельца
   react/      <FeedbackWidget />
   iife.ts     <script>-бандл с автоинициализацией
+  settings-iife.ts  <script>-бандл страницы настроек
   types.ts
-demo/         страница с разными элементами, script-tag пример, мок-сервер
+demo/         страница с разными элементами, script-tag пример, мок-сервер, settings.html, github.mjs (бэкенд GitHub), github-mock.mjs (тестовый GitHub)
 tests/unit    Vitest
 tests/e2e     Playwright
 ```
 
 ## Дальше (вне MVP)
 
-Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe.
+Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: ответы в треде → комментарии issue, «Решён» → закрытие issue, GitHub App вместо OAuth App (права на отдельные репозитории).

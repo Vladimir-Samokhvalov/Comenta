@@ -10,6 +10,8 @@
  *           data-z-index="2147483000"
  *           data-auto-init="false"             (opt out; call Comenta.initFeedback yourself)
  *   ></script>
+ *
+ * The owner's GitHub settings page uses a separate bundle: settings.iife.js (`<comenta-settings>`).
  */
 import { initFeedback, httpAdapter, consoleAdapter, buildSelector } from './index';
 import type { FeedbackInstance, FeedbackOptions, FeedbackPosition } from './types';

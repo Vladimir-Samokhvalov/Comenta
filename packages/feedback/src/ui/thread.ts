@@ -244,8 +244,11 @@ export class Thread {
     const headKids: Node[] = [
       h(d, 'span', { class: 'ph-badge' }, [badge]),
       h(d, 'span', { class: 'ph-status', 'data-status': resolved ? 'resolved' : 'open' }, [resolved ? L.statusResolved : L.statusOpen]),
-      h(d, 'span', { class: 'ph-spacer' }),
     ];
+    if (p.issue && /^https?:\/\//.test(p.issue.url)) {
+      headKids.push(h(d, 'a', { class: 'ph-issue', href: p.issue.url, target: '_blank', rel: 'noopener noreferrer', title: `${p.issue.repo}#${p.issue.number}` }, [L.issueLink(p.issue)]));
+    }
+    headKids.push(h(d, 'span', { class: 'ph-spacer' }));
     if (m.canResolve) {
       const label = resolved ? L.reopen : L.resolve;
       const b = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-resolve', 'data-status': resolved ? 'resolved' : 'open', 'aria-label': label, title: label }, [resolved ? reopenIcon(d) : checkIcon(d)]);

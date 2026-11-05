@@ -7,5 +7,5 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "exclude": ["src/iife.ts"]
+  "exclude": ["src/iife.ts", "src/settings-iife.ts"]
 }

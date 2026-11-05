@@ -42,6 +42,21 @@ export interface FeedbackPayload {
   resolvedAt?: string;
   /** Replies, oldest first. Returned by `list()` / `listAll()`; not sent with `submit`. */
   replies?: FeedbackReply[];
+  /** Issue created from this comment in a tracker (set by the backend, e.g. the GitHub integration). */
+  issue?: FeedbackIssueLink;
+}
+
+/** Link to the issue a comment became. The widget shows it in the thread header. */
+export interface FeedbackIssueLink {
+  provider: 'github' | (string & {});
+  /** `owner/name` */
+  repo: string;
+  number: number;
+  url: string;
+  /** GitHub node id of the issue. */
+  nodeId?: string;
+  /** Projects v2 node id the issue was added to. */
+  projectId?: string;
 }
 
 export type FeedbackStatus = 'open' | 'resolved';
@@ -98,6 +113,8 @@ export interface FeedbackFile {
 export interface FeedbackSubmitResult {
   /** attachment id → playback URL */
   attachmentUrls?: Record<string, string>;
+  /** Issue the backend created for the comment (shown in the thread right away). */
+  issue?: FeedbackIssueLink;
 }
 
 export interface FeedbackAuthor {
@@ -212,6 +229,8 @@ export interface FeedbackLabels {
   hideResolved: string;
   unread: (n: number) => string;
   replies: (n: number) => string;
+  /** Thread header link to the tracker issue, e.g. `GitHub #12`. */
+  issueLink: (issue: FeedbackIssueLink) => string;
 }
 
 export interface FeedbackOptions {

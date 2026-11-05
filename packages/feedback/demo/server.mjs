@@ -8,12 +8,16 @@
 //   DELETE /api/feedback/:id/replies/:replyId
 //   PATCH  /api/feedback/:id                     → { status, by, at }
 //   multipart POST (payload + recordings) → files saved to demo/uploads/, answers { attachments: { id: url } }
+//   /api/github/*                               → GitHub integration (demo/github.mjs, used by <comenta-settings>)
+//   GITHUB_MOCK=1                               → fake GitHub at /__github (demo/github-mock.mjs), no account needed
 // The demo does not check permissions (who may resolve, edit, delete): a real backend must.
-// Header X-Comenta-Space keeps separate stores (the e2e tests use one per test).
+// Header X-Comenta-Space (or cookie comenta_space) keeps separate stores (the e2e tests use one per test).
 import { createServer } from 'node:http';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
+import { createGitHubIntegration } from './github.mjs';
+import { createGitHubMock } from './github-mock.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const LOG = process.env.FEEDBACK_LOG ?? join(ROOT, 'demo', 'feedback.log');
@@ -39,7 +43,24 @@ function persist() {
   for (const [space, list] of store) for (const c of list) lines.push(JSON.stringify(space === 'default' ? c : { _space: space, ...c }));
   saving = saving.then(() => writeFile(LOG, lines.length ? `${lines.join('\n')}\n` : '')).catch((e) => console.error(e));
 }
-const spaceOf = (req) => String(req.headers['x-comenta-space'] ?? 'default').slice(0, 80);
+const cookieSpace = (req) => /(?:^|;\s*)comenta_space=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
+const spaceOf = (req) => String(req.headers['x-comenta-space'] ?? cookieSpace(req) ?? 'default').slice(0, 80);
+
+const mock = process.env.GITHUB_MOCK === '1' ? createGitHubMock(`http://localhost:${PORT}/__github`) : null;
+if (mock) {
+  Object.assign(process.env, {
+    GITHUB_API_URL: `http://localhost:${PORT}/__github/api`,
+    GITHUB_WEB_URL: `http://localhost:${PORT}/__github`,
+    GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID ?? 'mock-client',
+    GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET ?? 'mock-secret',
+  });
+}
+const github = createGitHubIntegration({
+  root: ROOT,
+  uploadsDir: UPLOADS,
+  persistComments: () => persist(),
+  findComment: (space, id) => store.get(space)?.find((c) => c.id === id) ?? null,
+});
 const listOf = (req) => {
   const k = spaceOf(req);
   if (!store.has(k)) store.set(k, []);
@@ -60,7 +81,8 @@ const json = (res, status, data) => res.writeHead(status, { 'Content-Type': 'app
 async function readItem(req) {
   const ctype = req.headers['content-type'] ?? '';
   const urls = {};
-  if (!ctype.startsWith('multipart/form-data')) return { item: JSON.parse((await readBody(req)).toString('utf8')), urls };
+  const files = [];
+  if (!ctype.startsWith('multipart/form-data')) return { item: JSON.parse((await readBody(req)).toString('utf8')), urls, files };
   const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
   const parts = parseMultipart(await readBody(req, 50 * 1024 * 1024), boundary);
   const item = JSON.parse(parts.find((p) => p.name === 'payload')?.data.toString('utf8') ?? 'null');
@@ -72,8 +94,9 @@ async function readItem(req) {
     const ext = (extname(p.filename ?? '') || '.webm').replace(/[^.a-z0-9]/gi, '');
     await writeFile(join(UPLOADS, `${id}${ext}`), p.data);
     urls[id] = att.url = `/uploads/${id}${ext}`;
+    files.push({ attachment: att, data: new Uint8Array(p.data) });
   }
-  return { item, urls };
+  return { item, urls, files };
 }
 
 async function readBody(req, limit = 256 * 1024) {
@@ -111,23 +134,30 @@ function parseMultipart(buf, boundary) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   try {
+    if (mock && (await mock.handle(req, res, url))) return;
+    if (url.pathname.startsWith('/api/github/')) return void (await github.handle(req, res, url, spaceOf(req)));
+
     if (url.pathname === '/api/feedback') {
       if (req.method === 'POST') {
         if (url.searchParams.has('fail')) {
           res.writeHead(503).end();
           return;
         }
-        const { item: payload, urls } = await readItem(req);
+        const { item: payload, urls, files: recordings } = await readItem(req);
         if (!payload?.id || (!payload?.text && !payload?.attachments?.length) || !payload?.target?.selector) {
           json(res, 400, { error: 'invalid payload' });
           return;
         }
         const list = listOf(req);
-        if (!list.some((c) => c.id === payload.id)) list.push(payload);
+        delete payload.issue; // set by the server only
+        const known = list.find((c) => c.id === payload.id);
+        if (!known) list.push(payload);
         persist();
         const files = Object.values(urls);
         console.log(`[feedback] ${payload.kind ?? 'без категории'}: "${payload.text}" → ${payload.target.selector}${files.length ? ` + ${files.join(', ')}` : ''}`);
-        json(res, 201, { ok: true, id: payload.id, attachments: urls });
+        // GitHub: create the issue (idempotent by comment id); waits a few seconds at most
+        const issue = await github.onComment(spaceOf(req), known ?? payload, recordings);
+        json(res, 201, { ok: true, id: payload.id, attachments: urls, ...(issue ? { issue } : {}) });
         return;
       }
       if (req.method === 'GET') {
@@ -220,4 +250,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Comenta demo: http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Comenta demo: http://localhost:${PORT}`);
+  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : process.env.GITHUB_CLIENT_ID ? '' : ' (OAuth не настроен: задайте GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET или GITHUB_MOCK=1)'}`);
+});

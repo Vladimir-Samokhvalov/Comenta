@@ -1,0 +1,316 @@
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { widget } from './helpers';
+
+// The demo server runs with GITHUB_MOCK=1: a fake GitHub lives at /__github (demo/github-mock.mjs).
+// Its state is global, so this file runs serially and resets it before every test
+// (with --repeat-each add --workers 1: copies of the file would share the mock).
+test.describe.configure({ mode: 'serial' });
+
+const s = (page: Page) => ({
+  card: page.locator('comenta-settings .cs'),
+  login: page.locator('comenta-settings .cs-login'),
+  name: page.locator('comenta-settings .cs-name'),
+  repo: page.locator('comenta-settings .cs-repo-input'),
+  options: page.locator('comenta-settings .cs-opt'),
+  list: page.locator('comenta-settings .cs-list'),
+  project: page.locator('comenta-settings .cs-project'),
+  save: page.locator('comenta-settings .cs-save'),
+  ok: page.locator('comenta-settings .cs-ok'),
+  saved: page.locator('comenta-settings .cs-saved'),
+  notes: page.locator('comenta-settings .cs-note'),
+  logout: page.locator('comenta-settings .cs-logout'),
+  logoutYes: page.locator('comenta-settings .cs-logout-yes'),
+  token: page.locator('comenta-settings .cs-token'),
+  details: page.locator('comenta-settings summary'),
+});
+
+type State = {
+  issues: Array<{ repo: string; number: number; title: string; body: string; node_id: string }>;
+  files: string[];
+  branches: Record<string, string[]>;
+  projectItems: Array<{ projectId: string; contentId: string }>;
+  revoked: number;
+};
+const ghState = async (page: Page): Promise<State> => (await page.request.get('/__github/state')).json();
+const control = (page: Page, data: object) => page.request.post('/__github/control', { data });
+
+let space = '';
+async function useGitHubSpace(page: Page, context: BrowserContext) {
+  space = `gh-${Math.random().toString(36).slice(2)}`;
+  // the widget sends the space as a header; the OAuth redirects carry it in a cookie
+  await context.addCookies([{ name: 'comenta_space', value: space, domain: 'localhost', path: '/' }]);
+  await page.addInitScript((sp) => ((window as unknown as { __comentaSpace: string }).__comentaSpace = sp), space);
+}
+
+async function signIn(page: Page) {
+  await page.goto('/demo/settings.html');
+  await s(page).login.click();
+  await expect(page).toHaveTitle(/Mock GitHub/);
+  await page.locator('#authorize').click();
+  await page.waitForURL(/\/demo\/settings\.html$/);
+  await expect(s(page).name).toHaveText('Владимир');
+}
+
+async function pickRepo(page: Page, query: string, fullName: string) {
+  await s(page).repo.click();
+  await s(page).repo.fill(query);
+  await page.locator(`comenta-settings .cs-opt[data-repo="${fullName}"]`).click();
+  await expect(s(page).repo).toHaveValue(fullName);
+}
+
+async function configure(page: Page, repo = 'acme-studio/web-app', project: string | null = 'Web App — бэклог') {
+  await signIn(page);
+  await pickRepo(page, repo.split('/')[1], repo);
+  if (project) await s(page).project.selectOption({ label: project });
+  await s(page).save.click();
+  await expect(s(page).ok).toHaveText('✓ Сохранено.');
+}
+
+async function leaveComment(page: Page, text: string) {
+  await page.goto('/');
+  const w = widget(page);
+  await w.toggle.click();
+  await page.locator('#inc').click();
+  await w.textarea.fill(text);
+  const res = page.waitForResponse((r) => r.url().endsWith('/api/feedback') && r.request().method() === 'POST');
+  await w.submit.click();
+  const body = await (await res).json();
+  await expect(w.popover).toBeHidden();
+  return body as { ok: boolean; id: string; issue?: { url: string; number: number; repo: string } };
+}
+
+test.beforeEach(async ({ page, context }) => {
+  await page.request.post('/__github/reset');
+  await useGitHubSpace(page, context);
+});
+
+test.describe('GitHub settings', () => {
+  test('sign in with GitHub, search a repository, pick a project, save', async ({ page }) => {
+    await page.goto('/demo/settings.html');
+    await expect(s(page).login).toHaveText('Войти через GitHub');
+    await signIn(page);
+    // searchable list: only repos with write access, archived ones hidden
+    await s(page).repo.click();
+    await expect(s(page).options).toHaveCount(6);
+    await expect(page.locator('comenta-settings .cs-opt[data-repo="acme-studio/docs"]')).toHaveCount(0);
+    await s(page).repo.fill('acme');
+    await expect(s(page).options).toHaveCount(3);
+    await page.keyboard.press('ArrowDown'); // second match
+    await page.keyboard.press('Enter');
+    await expect(s(page).repo).toHaveValue('acme-studio/design-system');
+    // projects of the repo's owner
+    await expect(s(page).project.locator('option')).toHaveText(['Без проекта', 'Web App — бэклог', 'Дизайн-ревью']);
+    await s(page).project.selectOption({ label: 'Дизайн-ревью' });
+    await s(page).save.click();
+    await expect(s(page).ok).toBeVisible();
+    await expect(s(page).saved).toContainText('acme-studio/design-system');
+    await expect(s(page).saved).toContainText('Дизайн-ревью');
+    await expect(s(page).save).toBeDisabled();
+    // survives a reload
+    await page.reload();
+    await expect(s(page).repo).toHaveValue('acme-studio/design-system');
+    await expect(s(page).project).toHaveValue('PVT_acme_4');
+  });
+
+  test('switching to a repository of another owner reloads projects and clears the choice', async ({ page }) => {
+    await signIn(page);
+    await pickRepo(page, 'landing', 'demo-owner/landing');
+    await expect(s(page).project.locator('option')).toHaveText(['Без проекта', 'Отзывы с сайта', 'Личный роадмап (закрыт)']);
+    await s(page).project.selectOption({ label: 'Отзывы с сайта' });
+    await pickRepo(page, 'web-app', 'acme-studio/web-app');
+    await expect(s(page).project).toHaveValue('');
+    await expect(s(page).project.locator('option')).toHaveText(['Без проекта', 'Web App — бэклог', 'Дизайн-ревью']);
+    // same owner: the project stays
+    await s(page).project.selectOption({ label: 'Дизайн-ревью' });
+    await pickRepo(page, 'mobile', 'acme-studio/mobile');
+    await expect(s(page).project).toHaveValue('PVT_acme_4');
+  });
+
+  test('cancelled sign-in on GitHub shows a message', async ({ page }) => {
+    await page.goto('/demo/settings.html');
+    await s(page).login.click();
+    await page.locator('#cancel').click();
+    await page.waitForURL(/settings\.html$/);
+    await expect(s(page).notes.filter({ hasText: 'Вход отменён на GitHub.' })).toBeVisible();
+    await expect(s(page).login).toBeVisible();
+  });
+
+  test('personal access token as a fallback', async ({ page }) => {
+    await page.goto('/demo/settings.html');
+    await s(page).details.click();
+    await s(page).token.fill('nope-not-a-real-token-but-long-enough');
+    await page.keyboard.press('Enter');
+    await expect(s(page).notes.filter({ hasText: 'GitHub не принял токен' })).toBeVisible();
+    await s(page).details.click().catch(() => {}); // re-render closes the <details>; open again if needed
+    if (!(await s(page).token.isVisible())) await s(page).details.click();
+    await s(page).token.fill('ghp_mock_local_dev_token_123456');
+    await page.keyboard.press('Enter');
+    await expect(s(page).name).toHaveText('Владимир');
+  });
+
+  test('no repositories / no projects', async ({ page }) => {
+    await control(page, { repos: 'empty' });
+    await signIn(page);
+    await expect(s(page).notes.filter({ hasText: 'Нет репозиториев, где у вас есть права на запись' })).toBeVisible();
+    await expect(s(page).repo).toBeDisabled();
+    await control(page, { repos: 'default', projects: 'empty' });
+    await page.reload();
+    await pickRepo(page, 'landing', 'demo-owner/landing');
+    await expect(page.locator('comenta-settings .cs-projects-empty')).toHaveText('У demo-owner нет проектов GitHub. Issues будут создаваться без проекта.');
+    await s(page).save.click();
+    await expect(s(page).saved).toContainText('demo-owner/landing');
+  });
+
+  test('missing project permission: warning, repo still usable', async ({ page }) => {
+    await control(page, { scopes: 'repo read:user' });
+    await signIn(page);
+    await expect(s(page).notes.filter({ hasText: 'Токену не хватает прав: project' })).toBeVisible();
+    await pickRepo(page, 'landing', 'demo-owner/landing');
+    await expect(s(page).notes.filter({ hasText: 'read:project' })).toBeVisible();
+    await s(page).save.click();
+    await expect(s(page).ok).toBeVisible();
+  });
+
+  test('repository with issues turned off: clear error on save', async ({ page }) => {
+    await signIn(page);
+    await pickRepo(page, 'no-issues', 'demo-owner/no-issues');
+    await s(page).save.click();
+    await expect(s(page).notes.filter({ hasText: 'выключены issues' })).toBeVisible();
+    await expect(s(page).saved).toContainText('Репозиторий ещё не выбран');
+  });
+
+  test('rate limit: readable message and retry', async ({ page }) => {
+    await signIn(page);
+    await expect(s(page).repo).toBeEnabled();
+    await control(page, { rateLimit: 600 });
+    await pickRepo(page, 'landing', 'demo-owner/landing'); // loads the owner's projects → limited
+    const note = s(page).notes.filter({ hasText: 'GitHub временно ограничил число запросов' });
+    await expect(note).toContainText('через 10 мин');
+    await expect(s(page).project).toBeEnabled();
+    await control(page, { rateLimit: 0 });
+    await note.getByRole('button', { name: 'Повторить' }).click();
+    await expect(note).toHaveCount(0);
+    await expect(s(page).project.locator('option')).toHaveCount(3);
+  });
+});
+
+test.describe('comments → GitHub issues', () => {
+  test('a comment becomes an issue in the repository and the project; the thread links to it', async ({ page }) => {
+    await configure(page);
+    const res = await leaveComment(page, 'Кнопка «+1» не реагирует на двойной клик @someone');
+    expect(res.issue).toMatchObject({ repo: 'acme-studio/web-app', number: 1 });
+    const st = await ghState(page);
+    expect(st.issues).toHaveLength(1);
+    const issue = st.issues[0];
+    expect(issue.title).toBe('Кнопка «+1» не реагирует на двойной клик @someone');
+    expect(issue.body).toContain('| Элемент | `#inc` |');
+    expect(issue.body).toContain(`<!-- comenta:id=${res.id} -->`);
+    expect(issue.body).not.toContain(' @someone');
+    expect(st.projectItems).toEqual([{ projectId: 'PVT_acme_3', contentId: issue.node_id }]);
+    // the thread header links to the issue
+    const w = widget(page);
+    await w.pins.first().click();
+    const link = page.locator('comenta-feedback .ph-issue');
+    await expect(link).toHaveText('GitHub #1');
+    await expect(link).toHaveAttribute('href', res.issue!.url);
+    await expect(link).toHaveAttribute('target', '_blank');
+    // and keeps it after a reload (the server stored it)
+    await page.reload();
+    await w.pins.first().click();
+    await expect(link).toHaveText('GitHub #1');
+  });
+
+  test('a voice message is uploaded to the attachments branch and linked with its duration', async ({ page }) => {
+    await configure(page, 'demo-owner/landing', null);
+    await page.goto('/');
+    const w = widget(page);
+    await w.toggle.click();
+    await page.locator('#inc').click();
+    // Telegram-style: hold the record button (fake microphone)
+    const btn = page.locator('comenta-feedback .ph-rec-btn');
+    const box = (await btn.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(450);
+    await page.mouse.up();
+    await page.waitForTimeout(1300);
+    await page.locator('comenta-feedback .ph-rec-stop').click();
+    await expect(page.locator('comenta-feedback .ph-popover audio')).toHaveCount(1);
+    const res = page.waitForResponse((r) => r.url().endsWith('/api/feedback') && r.request().method() === 'POST');
+    await w.submit.click();
+    const body = await (await res).json();
+    expect(body.issue.number).toBe(1);
+    const st = await ghState(page);
+    expect(st.branches['demo-owner/landing']).toEqual(['comenta-attachments']);
+    expect(st.files).toHaveLength(1);
+    expect(st.files[0]).toMatch(new RegExp(`^demo-owner/landing@comenta-attachments:comenta/${body.id}/voice-[\\w-]+\\.(webm|ogg|m4a|mp4)$`));
+    expect(st.issues[0].body).toMatch(/- \[🎙 Голос, 0:0\d\]\(http:\/\/localhost:\d+\/__github\/web\/demo-owner\/landing\/blob\/comenta-attachments\/comenta\//);
+    expect(st.issues[0].title).toBe('Голосовой комментарий: Comenta — демо виджета комментариев');
+  });
+
+  test('sending the same comment twice creates one issue', async ({ page }) => {
+    await configure(page);
+    const res = await leaveComment(page, 'Дубликат?');
+    const payload = await page.evaluate(() => (window as unknown as { __lastPayload: unknown }).__lastPayload);
+    const again = await page.request.post('/api/feedback', { data: payload, headers: { 'X-Comenta-Space': space } });
+    expect((await again.json()).issue.number).toBe(res.issue!.number);
+    expect((await ghState(page)).issues).toHaveLength(1);
+  });
+
+  test('GitHub is down: the comment is kept and becomes an issue once GitHub is back', async ({ page }) => {
+    await configure(page);
+    await control(page, { failNext: 1000 });
+    const res = await leaveComment(page, 'Пока GitHub лежит');
+    expect(res.ok).toBe(true);
+    expect(res.issue).toBeUndefined();
+    await control(page, { failNext: 0 });
+    await expect.poll(async () => (await ghState(page)).issues.length, { timeout: 10_000 }).toBe(1);
+    // the server stores the link (after adding the issue to the project) …
+    await expect
+      .poll(async () => (await (await page.request.get('/api/feedback', { headers: { 'X-Comenta-Space': space } })).json())[0]?.issue?.number, { timeout: 10_000 })
+      .toBe(1);
+    // … and it reaches the widget on the next refresh
+    await page.reload();
+    await widget(page).pins.first().click();
+    await expect(page.locator('comenta-feedback .ph-issue')).toHaveText('GitHub #1');
+  });
+
+  test('revoked token: settings ask to sign in again; queued comments are sent after it', async ({ page }) => {
+    await configure(page);
+    await control(page, { revoke: true });
+    const res = await leaveComment(page, 'После отзыва токена');
+    expect(res.issue).toBeUndefined();
+    await page.goto('/demo/settings.html');
+    await expect(s(page).notes.filter({ hasText: 'Доступ к GitHub истёк или был отозван' })).toBeVisible();
+    await expect(s(page).login).toHaveText('Войти заново');
+    await s(page).login.click();
+    await page.locator('#authorize').click();
+    await page.waitForURL(/settings\.html$/);
+    // the chosen repository is kept, and the queued comment goes out
+    await expect(s(page).repo).toHaveValue('acme-studio/web-app');
+    await expect.poll(async () => (await ghState(page)).issues.map((i) => i.title), { timeout: 10_000 }).toEqual(['После отзыва токена']);
+  });
+
+  test('logout deletes the token: GitHub grant revoked, new comments stay local', async ({ page }) => {
+    await configure(page);
+    await s(page).logout.click();
+    await expect(s(page).notes.filter({ hasText: 'Отключить GitHub?' })).toBeVisible();
+    await s(page).logoutYes.click();
+    await expect(s(page).login).toBeVisible();
+    expect((await ghState(page)).revoked).toBe(1);
+    const res = await leaveComment(page, 'После выхода');
+    expect(res.issue).toBeUndefined();
+    await page.waitForTimeout(1000); // longer than the retry queue tick
+    expect((await ghState(page)).issues).toHaveLength(0);
+    // settings routes need the session again
+    const r = await page.request.get('/api/github/repos', { headers: { 'X-Comenta-Space': space } });
+    expect(r.status()).toBe(401);
+  });
+
+  test('without GitHub configured nothing changes for comments', async ({ page }) => {
+    const res = await leaveComment(page, 'Обычный комментарий');
+    expect(res.issue).toBeUndefined();
+    await widget(page).pins.first().click();
+    await expect(page.locator('comenta-feedback .ph-issue')).toHaveCount(0);
+  });
+});

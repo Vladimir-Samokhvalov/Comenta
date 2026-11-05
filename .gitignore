@@ -4,3 +4,4 @@ test-results
 playwright-report
 packages/feedback/demo/feedback.log
 packages/feedback/demo/uploads
+packages/feedback/demo/github.json

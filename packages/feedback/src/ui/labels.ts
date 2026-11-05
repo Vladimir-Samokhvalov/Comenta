@@ -75,4 +75,5 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   hideResolved: 'Скрыть решённые',
   unread: (n) => `${n} ${plural(n, 'тред', 'треда', 'тредов')} с новыми ответами`,
   replies: (n) => `${n} ${plural(n, 'ответ', 'ответа', 'ответов')}`,
+  issueLink: (i) => `${i.provider === 'github' ? 'GitHub' : i.provider} #${i.number}`,
 };

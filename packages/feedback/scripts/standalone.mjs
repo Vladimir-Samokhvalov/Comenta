@@ -34,6 +34,7 @@ const out = html
   .slice(0, start)
   .replace(/<select id="adapter">[\s\S]*?<\/select>/, `<select id="adapter">\n          ${options}\n        </select>`)
   .replace('<a id="top-left-link" href="/somewhere">', '<a id="top-left-link" href="https://example.com/somewhere">')
+  .replace(' · <a href="/demo/settings.html" id="settings-link">Настройки GitHub</a>', '') // needs the server
   .replace('<a href="/elsewhere" id="nav-away">', '<a href="https://example.com/elsewhere" id="nav-away">')
   .replace('</h1>', '</h1>\n    <p class="muted">Автономная версия: всё в одном файле, заявки пишутся в консоль браузера и localStorage.</p>')
   .concat(`<script data-auto-init="false">\n${bundle}\n</script>\n`, page, html.slice(end));
