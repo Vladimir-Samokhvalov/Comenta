@@ -371,15 +371,114 @@ pnpm demo:github    # тестовый GitHub на /__github: вход, репо
 
 Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. Действия «на GitHub» для проверки синхронизации: `curl -X POST localhost:5174/__github/issue -H 'Content-Type: application/json' -d '{"repo":"acme-studio/web-app","number":1,"comment":"Привет из GitHub"}'` (или `"close":"completed"`, `"reopen":true`, `"delete":true`). `COMENTA_GITHUB_BOT=0 pnpm demo:github` — то же без приватного ключа (issues от имени владельца); e2e в этом режиме: `COMENTA_GITHUB_BOT=0 pnpm test:e2e`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
 
+## GitLab: комментарии → issues
+
+То же самое для GitLab: gitlab.com или ваш собственный (self-hosted) GitLab. Сайт работает с одним трекером: на странице настроек владелец выбирает GitHub или GitLab, и пока один подключён, второй заблокирован (сначала нужно выйти).
+
+```
+посетитель ──comment──▶ ваш сервер ──token──▶ GitLab: issue, загрузки, notes
+владелец ──<comenta-settings providers="github gitlab">──▶ ваш сервер (/api/gitlab/*) ──OAuth──▶ GitLab
+```
+
+* `@comenta/feedback/gitlab` — серверный модуль (нужны `fetch` и `FormData`, Node 18+): OAuth с refresh-токенами, проверка адреса GitLab, проекты, issues, загрузки, notes, закрытие и открытие.
+* `@comenta/feedback/tracker` — общий для GitHub и GitLab слой: ошибки `TrackerError`, текст issue и ответа, слияние комментариев, один статус, правила видимости. Новый трекер добавляется так же: свой модуль API плюс этот слой.
+* Рабочий пример бэкенда: [`demo/gitlab.mjs`](demo/gitlab.mjs). Очереди, опрос и один статус у GitHub и GitLab общие: [`demo/tracker-sync.mjs`](demo/tracker-sync.mjs), каждому трекеру нужен только небольшой «драйвер» с вызовами его API.
+
+### Как устроено
+
+| | GitHub | GitLab |
+|---|---|---|
+| Где | github.com | gitlab.com или ваш сервер (адрес вводится в настройках) |
+| Вход | GitHub App | OAuth-приложение GitLab, права `api` и `read_user` |
+| Токен | 8 часов, обновляется сам | 2 часа, обновляется сам по refresh-токену (он одноразовый, новый сохраняется) |
+| Куда | репозиторий (+ Project v2 по желанию) | проект, в том числе проекты групп и подгрупп; поиск по всем проектам |
+| Кто создаёт issues и отвечает | бот приложения (без ключа — владелец) | владелец сайта (его токен), бота нет |
+| Записи и скриншоты | ветка `comenta-attachments` | Uploads API проекта, встроены в issue плеером (`![🎙 Голос, 0:42](…)`) |
+| Номер в треде | `GitHub #12` | `GitLab #7` (это `iid` issue в проекте) |
+| Статус | open / closed (+ причина) | opened / closed |
+| Комментарии | issue comments | notes; системные («changed the description») и внутренние (internal) не импортируются никогда |
+
+Всё остальное одинаково: метка `<!-- comenta:id=… -->` и повтор без дублей, один статус (закрыть в Comenta = закрыть issue, и наоборот; при расхождении побеждает трекер; если трекер не ответил, статус не меняется и показывается ошибка), тред с issue закрывает только владелец, ответы подписываются `**Имя Фамилия:** текст` и не возвращаются эхом, статус и комментарии из трекера видят только владелец сайта и автор комментария.
+
+### Подключение GitLab
+
+1. **Создайте OAuth-приложение** на том GitLab, куда будут уходить комментарии. У каждого GitLab свои приложения: ключи с gitlab.com не подходят для self-hosted, и наоборот.
+   * gitlab.com или свой GitLab: аватар → **Edit profile → Applications** (`https://gitlab.com/-/user_settings/applications`), или приложение группы (**Group → Settings → Applications**), или на своём GitLab администратором (**Admin → Applications**).
+   * **Name**: Comenta. **Redirect URI**: `https://ваш-сайт/api/gitlab/auth/callback` (для локального демо `http://localhost:5174/api/gitlab/auth/callback`).
+   * **Confidential**: да. **Scopes**: `api` и `read_user`.
+   * После сохранения GitLab покажет **Application ID** и **Secret**.
+2. **Передайте их серверу**, не в браузер и не в чат: переменные окружения `GITLAB_URL` (по умолчанию `https://gitlab.com`), `GITLAB_CLIENT_ID` (Application ID), `GITLAB_CLIENT_SECRET` (Secret), либо файл `demo/gitlab-apps.json` (в `.gitignore`), если GitLab-ов несколько:
+
+   ```json
+   [{ "url": "https://git.example.com", "clientId": "…", "clientSecret": "…" }]
+   ```
+
+   За прокси задайте `PUBLIC_URL`, чтобы redirect URI совпадал с указанным в приложении.
+3. **Свой сертификат.** Если у вашего GitLab самоподписанный сертификат, запустите сервер Comenta с `NODE_EXTRA_CA_CERTS=/путь/к/ca.pem`; иначе настройки покажут понятную ошибку про сертификат. Адреса `http://` принимаются только для `localhost` (или с `GITLAB_ALLOW_HTTP=1`).
+4. **Страница настроек**: `<comenta-settings providers="github gitlab" endpoint="/api/github" gitlab-endpoint="/api/gitlab">`. Владелец выбирает GitLab, вводит адрес (по умолчанию gitlab.com или первый настроенный), входит, ищет проект и сохраняет. Для локальной разработки можно вставить personal access token с правом `api`.
+
+Маршруты `/api/gitlab/*` такие же, как у GitHub, с отличиями: `GET /auth/login?return=&url=<адрес GitLab>`, `POST /auth/token { token, url }`, `GET /repos?q=` (поиск на стороне GitLab, когда проектов больше, чем поместилось в список; ответ `{ items, complete }`), `PUT /config { id, repo }`, `/projects` нет. В `GET /status` есть `active` (этот трекер — трекер сайта), `blockedBy` (подключён другой), `instances`, `defaultUrl`, `instanceUrl`.
+
+```ts
+import { GitLabClient, GitLabError, syncComment, postNote, setIssueState, applyIssueState } from '@comenta/feedback/gitlab';
+
+const gl = new GitLabClient({ baseUrl: owner.gitlabUrl, token: () => owner.freshToken() }); // refreshAccessToken каждые ~2 часа
+try {
+  comment.issue = await syncComment(gl, { projectId: config.id, path: config.fullName }, payload, files, { checkExisting: attempt > 0 });
+  // { provider: 'gitlab', repo: 'group/project', number: <iid>, url, nodeId, repoId: <project id> }
+} catch (e) {
+  if (e instanceof GitLabError && e.retryable) queueRetry(comment); // сеть, 5xx, 429 (e.resetAt)
+  else if (e instanceof GitLabError && e.code === 'unauthorized') markTokenExpired();
+  else reportToOwner(e.message); // нет прав (нужна роль Reporter+), issues выключены, сертификат…
+}
+reply.link = await postNote(gl, comment.issue, reply, files, { checkExisting: attempt > 0 });
+applyIssueState(comment.issue, await setIssueState(gl, comment.issue, 'closed'));
+```
+
+**Опрос.** Раз в 30–60 с сервер запрашивает issues проекта, изменённые после курсора (`GET /projects/:id/issues?updated_after=…`). Новая или изменённая note обновляет `updated_at` своего issue, поэтому у таких issues сервер перечитывает notes целиком (так же находятся удаления). Отдельного списка notes по всему проекту в GitLab нет. Когда владелец или автор открывает виджет, issues показанных карточек перечитываются, как и для GitHub. В демо: `COMENTA_GITLAB_POLL_MS`, `COMENTA_GITLAB_REFRESH_MS`.
+
+### Права
+
+Comenta просит у GitLab `api` (issues, notes, загрузки) и `read_user` (имя и аватар владельца в настройках). В списке — проекты, где у владельца роль **Reporter** или выше (этого хватает, чтобы создавать, закрывать и комментировать issues), включая проекты групп и подгрупп; архивные не показываются.
+
+### Ошибки и как их видит владелец
+
+| Ситуация | Что происходит |
+|---|---|
+| Опечатка в адресе | «Это не похоже на адрес GitLab» до перехода на GitLab |
+| На сервере нет OAuth-приложения для этого GitLab | Сообщение, что добавить в настройки сервера; можно подключиться по токену |
+| По адресу не GitLab, сервер не найден, порт закрыт | «По этому адресу не отвечает GitLab» / «Сервер GitLab не найден» / «не принимает подключения» |
+| Самоподписанный или просроченный сертификат | Ошибка про сертификат с подсказкой про `NODE_EXTRA_CA_CERTS`; без повторов |
+| Токен истёк | Обновляется сам по refresh-токену, владельцу ничего делать не нужно |
+| Токен отозван (или refresh-токен недействителен) | «Доступ к GitLab истёк или был отозван», кнопка «Войти заново»; комментарии и ответы ждут в очереди и уходят после входа, выбранный проект сохраняется |
+| Нет права `api` | «Токену не хватает прав: api. Выйдите и войдите снова…» |
+| Роль ниже Reporter, issues выключены, проект в архиве | Проект не сохраняется, причина названа; если роль понизили позже, комментарии ждут, а в настройках видна последняя ошибка |
+| Нет проектов | «Нет проектов, где у вас роль Reporter или выше…» |
+| Очень много проектов | Показываются первые 500, ввод ищет по всем на стороне GitLab |
+| Сеть, 5xx | Безопасные запросы повторяются; комментарий сохраняется у вас, при повторе сначала ищется issue по метке |
+| Rate limit (429) | «GitLab временно ограничил число запросов. Попробуйте через N мин.»; опрос и очереди ждут до сброса |
+| Issue удалён или перенесён в другой проект («Move issue») | «Issue недоступен», ссылка остаётся, статус живёт в Comenta |
+| Выход | Токен отзывается на GitLab и удаляется с сервера; новые комментарии остаются только у вас |
+
+### Попробовать без GitLab
+
+```bash
+pnpm demo:gitlab    # тестовый GitLab на /__gitlab (как self-hosted): вход, проекты с группами, issues, notes
+pnpm demo:mock      # тестовые GitHub и GitLab сразу
+```
+
+Откройте `http://localhost:5174/demo/settings.html`, выберите GitLab и войдите. Что создалось — на `/__gitlab/state`. Действия «на GitLab»: `curl -X POST localhost:5174/__gitlab/issue -H 'Content-Type: application/json' -d '{"project":"acme-studio/web-app","iid":1,"note":"Привет из GitLab","username":"ivan"}'` (или `"close":true`, `"reopen":true`, `"delete":true`, `"move":true`, `"internal":true` для внутренней заметки).
+
 ## Разработка
 
 ```bash
 pnpm install
 pnpm build          # dist/: ESM, CJS, IIFE, .d.ts
-pnpm test           # unit (Vitest + jsdom): селектор, санитизация, позиционирование, адаптеры, lifecycle, React, GitHub
-pnpm test:e2e       # build + Playwright по демо-странице и настройкам GitHub (тестовый GitHub)
+pnpm test           # unit (Vitest + jsdom): селектор, санитизация, позиционирование, адаптеры, lifecycle, React, GitHub, GitLab
+pnpm test:e2e       # build + Playwright по демо-странице и настройкам (тестовые GitHub и GitLab)
 pnpm demo           # http://localhost:5174 — демо + мок-сервер
 pnpm demo:github    # то же с тестовым GitHub (настройки: /demo/settings.html)
+pnpm demo:gitlab    # то же с тестовым GitLab
 pnpm github-app:setup # регистрация GitHub App для настоящего GitHub, один раз
 pnpm size           # gzip-размеры, бюджет 30 КБ
 pnpm standalone     # dist/demo-standalone.html: демо одним файлом, открывается двойным кликом
@@ -395,17 +494,20 @@ src/
   selector/   генерация селектора, эвристики хэшей, санитизация и описание элемента
   ui/         shadow-root: плашка с кнопками, меню и список комментариев, подсветка, поповер (форма и тред), поле ввода с записью, тост, стили, тексты
   adapters/   http, console/localStorage
-  github/     серверная интеграция: клиент (повторы, ошибки), вход через GitHub App, репозитории и проекты, текст issue, синхронизация
-  settings/   <comenta-settings>: страница настроек GitHub для владельца
+  tracker/    общее для всех трекеров: ошибки, текст issue и ответа, слияние комментариев, один статус, видимость
+  github/     серверная интеграция GitHub: клиент (повторы, ошибки), вход через GitHub App, репозитории и проекты, синхронизация
+  gitlab/     серверная интеграция GitLab: клиент (ошибки, TLS), OAuth, проверка адреса, проекты, issues, загрузки, notes
+  settings/   <comenta-settings>: страница настроек для владельца (GitHub или GitLab)
   react/      <FeedbackWidget />
   iife.ts     <script>-бандл с автоинициализацией
   settings-iife.ts  <script>-бандл страницы настроек
   types.ts
-demo/         страница с разными элементами, script-tag пример, мок-сервер, settings.html, github.mjs (бэкенд GitHub), github-mock.mjs (тестовый GitHub)
+demo/         страница с разными элементами, script-tag пример, мок-сервер, settings.html, tracker-sync.mjs (общий движок синхронизации),
+              github.mjs / gitlab.mjs (бэкенды), github-mock.mjs / gitlab-mock.mjs (тестовые GitHub и GitLab)
 tests/unit    Vitest
 tests/e2e     Playwright
 ```
 
 ## Дальше (вне MVP)
 
-Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: вебхуки вместо опроса, колонка GitHub Project на карточке.
+Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграция с YouTrack (на общем слое трекеров), мобильные жесты, iframe. GitHub и GitLab: вебхуки вместо опроса; GitHub: колонка GitHub Project на карточке; GitLab: бот (group/project access token), метки и исполнители.

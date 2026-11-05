@@ -1,61 +1,13 @@
-/**
- * Errors of the GitHub integration. Every error has a stable `code` (for your logic and the
- * settings UI) and a Russian `message` that can be shown to the site owner as is.
- */
-export type GitHubErrorCode =
-  /** Token expired, revoked or never valid: the owner has to sign in again. */
-  | 'unauthorized'
-  /** The token lacks an OAuth scope (see `missingScopes`) or repo permission. */
-  | 'forbidden'
-  /** Issues are turned off in the repository. */
-  | 'issues_disabled'
-  /** Repository / project not found or not visible to the token. */
-  | 'not_found'
-  /** Primary or secondary rate limit; see `resetAt` / `retryAfterMs`. */
-  | 'rate_limited'
-  /** GitHub rejected the input (422). */
-  | 'validation'
-  /** No connection, timeout or 5xx after retries. */
-  | 'network'
-  /** The integration is not configured (no token or no repository). */
-  | 'not_configured'
-  /** The GitHub App was removed from the account / repository (or suspended). */
-  | 'uninstalled';
+/** Errors of the GitHub integration: `TrackerError`s with GitHub's messages. */
+import { TrackerError, waitMessage, type TrackerErrorCode, type TrackerErrorExtra } from '../tracker/errors';
 
-export class GitHubError extends Error {
-  readonly code: GitHubErrorCode;
-  readonly status?: number;
-  /** For `rate_limited`: when the limit resets (ms since epoch). */
-  readonly resetAt?: number;
-  /** For `rate_limited`: how long GitHub asked to wait. */
-  readonly retryAfterMs?: number;
-  /** For `forbidden`: scopes the endpoint needs that the token does not have. */
-  readonly missingScopes?: string[];
+export type GitHubErrorCode = TrackerErrorCode;
 
-  constructor(
-    code: GitHubErrorCode,
-    message: string,
-    extra: { status?: number; resetAt?: number; retryAfterMs?: number; missingScopes?: string[] } = {},
-  ) {
-    super(message);
+/** A `TrackerError` with `provider: 'github'`. */
+export class GitHubError extends TrackerError {
+  constructor(code: GitHubErrorCode, message: string, extra: TrackerErrorExtra = {}) {
+    super('github', code, message, extra);
     this.name = 'GitHubError';
-    this.code = code;
-    Object.assign(this, extra);
-  }
-
-  /** Errors worth retrying later (the sync queue keeps the comment and tries again). */
-  get retryable(): boolean {
-    return this.code === 'network' || this.code === 'rate_limited';
-  }
-
-  toJSON() {
-    return {
-      code: this.code,
-      message: this.message,
-      ...(this.status ? { status: this.status } : {}),
-      ...(this.resetAt ? { resetAt: new Date(this.resetAt).toISOString() } : {}),
-      ...(this.missingScopes?.length ? { missingScopes: this.missingScopes } : {}),
-    };
   }
 }
 
@@ -71,7 +23,5 @@ export const MESSAGES = {
 } as const;
 
 export function rateLimitMessage(resetAt?: number, now = Date.now()): string {
-  if (!resetAt) return 'GitHub временно ограничил число запросов. Попробуйте через минуту.';
-  const min = Math.max(1, Math.ceil((resetAt - now) / 60000));
-  return `GitHub временно ограничил число запросов. Попробуйте через ${min} мин.`;
+  return waitMessage('GitHub', resetAt, now);
 }

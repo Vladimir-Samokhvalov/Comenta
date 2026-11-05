@@ -40,23 +40,26 @@ export interface FeedbackPayload {
   /** Who resolved the thread and when (set together with `status: 'resolved'`). */
   resolvedBy?: FeedbackAuthor;
   resolvedAt?: string;
-  /** `github`: the thread was closed by closing its issue on GitHub (`resolvedBy` is the GitHub user, if known). */
-  resolvedVia?: 'github' | (string & {});
+  /** `github` / `gitlab`: the thread was closed by closing its issue on the tracker (`resolvedBy` is the tracker user, if known). */
+  resolvedVia?: 'github' | 'gitlab' | (string & {});
   /** Replies, oldest first. Returned by `list()` / `listAll()`; not sent with `submit`. */
   replies?: FeedbackReply[];
-  /** Issue created from this comment in a tracker (set by the backend, e.g. the GitHub integration). */
+  /** Issue created from this comment in a tracker (set by the backend, e.g. the GitHub or GitLab integration). */
   issue?: FeedbackIssueLink;
 }
 
 /** Link to the issue a comment became. The widget shows it in the thread header. */
 export interface FeedbackIssueLink {
-  provider: 'github' | (string & {});
-  /** `owner/name` */
+  provider: 'github' | 'gitlab' | (string & {});
+  /** `owner/name` on GitHub, the project path (`group/subgroup/project`) on GitLab. */
   repo: string;
+  /** Issue number (GitLab: the issue's `iid` in its project). */
   number: number;
   url: string;
-  /** GitHub node id of the issue. */
+  /** GitHub node id of the issue; GitLab: the issue's global id. */
   nodeId?: string;
+  /** Stable id of the repository / project (GitLab project id: survives renames). */
+  repoId?: number | string;
   /** Projects v2 node id the issue was added to. */
   projectId?: string;
   /**
@@ -64,7 +67,7 @@ export interface FeedbackIssueLink {
    * Backends should send it (and replies with `origin`) only to the site owner and the comment's author (see `forViewer`).
    */
   state?: 'open' | 'closed';
-  /** Why it was closed: GitHub's `state_reason` (`completed`, `not_planned`, `duplicate`…). */
+  /** Why it was closed: GitHub's `state_reason` (`completed`, `not_planned`, `duplicate`…); GitLab: null. */
   stateReason?: string | null;
   /** ISO 8601, when `state` is `closed`. */
   closedAt?: string;
@@ -74,9 +77,9 @@ export interface FeedbackIssueLink {
   unavailable?: 'deleted' | 'transferred' | 'no_access';
 }
 
-/** The copy of a reply in a tracker (a GitHub issue comment). */
+/** The copy of a reply in a tracker (a GitHub issue comment, a GitLab note). */
 export interface FeedbackReplyLink {
-  provider: 'github' | (string & {});
+  provider: 'github' | 'gitlab' | (string & {});
   id: number | string;
   url: string;
 }
@@ -97,10 +100,10 @@ export interface FeedbackReply {
   author?: FeedbackAuthor;
   attachments?: FeedbackAttachment[];
   /**
-   * Where the reply was written. `github`: a comment on the linked issue, imported by the backend
-   * (read-only in the widget, shown with the GitHub name and avatar). Absent: written in Comenta.
+   * Where the reply was written. `github` / `gitlab`: a comment on the linked issue, imported by the backend
+   * (read-only in the widget, shown with the tracker name and avatar). Absent: written in Comenta.
    */
-  origin?: 'github' | (string & {});
+  origin?: 'github' | 'gitlab' | (string & {});
   /** The tracker comment: the original for imported replies, the copy for Comenta replies the backend posted. */
   link?: FeedbackReplyLink;
 }
@@ -262,7 +265,7 @@ export interface FeedbackLabels {
   hideResolved: string;
   unread: (n: number) => string;
   replies: (n: number) => string;
-  /** Thread header link to the tracker issue, e.g. `GitHub #12`. */
+  /** Thread header link to the tracker issue, e.g. `GitHub #12`, `GitLab #7`. */
   issueLink: (issue: FeedbackIssueLink) => string;
   /** Issue state next to the link in the thread header: `открыт` / `закрыт`. */
   issueState: (issue: FeedbackIssueLink) => string;
@@ -270,10 +273,12 @@ export interface FeedbackLabels {
   issueStateLong: (issue: FeedbackIssueLink) => string;
   /** The linked issue was deleted, transferred or access to it was lost. */
   issueUnavailable: string;
-  /** Event line when the issue was closed on GitHub: `octo закрыл(а) на GitHub · не будет сделан`. */
-  closedOnGitHub: (name: string | undefined, reason: string | null) => string;
-  /** Mark on replies written on GitHub. */
-  fromGitHub: string;
+  /** Name of a tracker: `GitHub`, `GitLab`. */
+  providerName: (provider: string) => string;
+  /** Event line when the issue was closed on the tracker: `octo закрыл(а) на GitHub · не будет сделан`. */
+  closedOnTracker: (provider: string, name: string | undefined, reason: string | null) => string;
+  /** Mark on replies written on the tracker: `из GitHub`, `из GitLab`. */
+  fromTracker: (provider: string) => string;
 }
 
 export interface FeedbackOptions {

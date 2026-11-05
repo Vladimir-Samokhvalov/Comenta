@@ -9,8 +9,10 @@
 //   PATCH  /api/feedback/:id                     → { status, by, at }
 //   multipart POST (payload + recordings) → files saved to demo/uploads/, answers { attachments: { id: url } }
 //   /api/github/*                               → GitHub integration (demo/github.mjs, used by <comenta-settings>)
-//   GITHUB_MOCK=1                               → fake GitHub at /__github (demo/github-mock.mjs), no account needed
-//   Replies are mirrored to the linked issue; GitHub state and comments come back for the owner and the comment's author.
+//   /api/gitlab/*                               → GitLab integration (demo/gitlab.mjs), gitlab.com or self-hosted
+//   GITHUB_MOCK=1 / GITLAB_MOCK=1               → fake GitHub at /__github, fake GitLab at /__gitlab, no account needed
+//   A site uses one tracker: GitHub or GitLab. Replies are mirrored to the linked issue; the tracker's state and
+//   comments come back for the owner and the comment's author.
 // The demo does not check permissions (who may resolve, edit, delete): a real backend must.
 // Header X-Comenta-Space (or cookie comenta_space) keeps separate stores (the e2e tests use one per test).
 import { createServer } from 'node:http';
@@ -19,6 +21,8 @@ import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { createGitHubIntegration } from './github.mjs';
 import { MOCK_APP, createGitHubMock } from './github-mock.mjs';
+import { createGitLabIntegration } from './gitlab.mjs';
+import { MOCK_GITLAB, createGitLabMock } from './gitlab-mock.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const LOG = process.env.FEEDBACK_LOG ?? join(ROOT, 'demo', 'feedback.log');
@@ -59,20 +63,34 @@ if (mock) {
     ...(process.env.COMENTA_GITHUB_BOT === '0' ? {} : { GITHUB_APP_ID: String(MOCK_APP.id), GITHUB_APP_PRIVATE_KEY: MOCK_APP.privateKey }),
   });
 }
-const github = createGitHubIntegration({
+const glMock = process.env.GITLAB_MOCK === '1' ? createGitLabMock(`http://localhost:${PORT}/__gitlab`) : null;
+if (glMock) {
+  Object.assign(process.env, {
+    GITLAB_URL: `http://localhost:${PORT}/__gitlab`,
+    GITLAB_CLIENT_ID: process.env.GITLAB_CLIENT_ID ?? MOCK_GITLAB.clientId,
+    GITLAB_CLIENT_SECRET: process.env.GITLAB_CLIENT_SECRET ?? MOCK_GITLAB.clientSecret,
+  });
+}
+const hooks = {
   root: ROOT,
   uploadsDir: UPLOADS,
   persistComments: () => persist(),
   findComment: (space, id) => store.get(space)?.find((c) => c.id === id) ?? null,
   listComments: (space) => store.get(space) ?? [],
-});
+};
+// one tracker per site: each integration refuses to connect while the other one is in use
+const github = createGitHubIntegration({ ...hooks, blockedBy: (space) => (gitlab.active(space) ? 'GitLab' : null) });
+const gitlab = createGitLabIntegration({ ...hooks, blockedBy: (space) => (github.active(space) ? 'GitHub' : null) });
+const trackers = { github, gitlab };
+/** The tracker a comment's issue lives in, or the one the site uses now (for comments without an issue yet). */
+const trackerOf = (space, comment) => trackers[comment?.issue?.provider] ?? (gitlab.active(space) ? gitlab : github);
 /**
  * GitHub state and comments written on GitHub are shown to the site owner and to the comment's author.
  * Here the owner is whoever has the GitHub settings session, or (demo only, the page has a user switcher
  * and no login) a request with `X-Comenta-Role: owner`; the viewer's author id comes from `X-Comenta-User`.
  * A real backend takes both from its own authentication.
  */
-const isOwner = (req) => github.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
+const isOwner = (req) => github.isOwner(req, spaceOf(req)) || gitlab.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
 const viewerOf = (req) => ({ owner: isOwner(req), id: typeof req.headers['x-comenta-user'] === 'string' ? req.headers['x-comenta-user'].slice(0, 200) : undefined });
 const listOf = (req) => {
   const k = spaceOf(req);
@@ -148,7 +166,9 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   try {
     if (mock && (await mock.handle(req, res, url))) return;
+    if (glMock && (await glMock.handle(req, res, url))) return;
     if (url.pathname.startsWith('/api/github/')) return void (await github.handle(req, res, url, spaceOf(req)));
+    if (url.pathname.startsWith('/api/gitlab/')) return void (await gitlab.handle(req, res, url, spaceOf(req)));
 
     if (url.pathname === '/api/feedback') {
       if (req.method === 'POST') {
@@ -168,8 +188,8 @@ const server = createServer(async (req, res) => {
         persist();
         const files = Object.values(urls);
         console.log(`[feedback] ${payload.kind ?? 'без категории'}: "${payload.text}" → ${payload.target.selector}${files.length ? ` + ${files.join(', ')}` : ''}`);
-        // GitHub: create the issue (idempotent by comment id); waits a few seconds at most
-        const issue = await github.onComment(spaceOf(req), known ?? payload, recordings);
+        // GitHub / GitLab: create the issue (idempotent by comment id); waits a few seconds at most
+        const issue = await trackerOf(spaceOf(req), known ?? payload).onComment(spaceOf(req), known ?? payload, recordings);
         json(res, 201, { ok: true, id: payload.id, attachments: urls, ...(issue ? { issue } : {}) });
         return;
       }
@@ -180,8 +200,8 @@ const server = createServer(async (req, res) => {
         const viewer = viewerOf(req);
         // the owner or an author opened the widget / it polled: pull fresh issue state and comments (throttled)
         const theirs = viewer.owner ? items : items.filter((c) => viewer.id && c.author?.id === viewer.id);
-        if (theirs.length) await github.refreshComments(spaceOf(req), theirs);
-        json(res, 200, github.forViewer(items, viewer));
+        if (theirs.length) await Promise.all([github.refreshComments(spaceOf(req), theirs), gitlab.refreshComments(spaceOf(req), theirs)]);
+        json(res, 200, github.forViewer(items, viewer)); // the same rule for every tracker
         return;
       }
       res.writeHead(405).end();
@@ -201,15 +221,15 @@ const server = createServer(async (req, res) => {
       if (!isReplies && req.method === 'PATCH') {
         const change = JSON.parse((await readBody(req)).toString('utf8'));
         if (change.status !== 'open' && change.status !== 'resolved') return void json(res, 400, { error: 'bad status' });
-        const linked = comment.issue?.provider === 'github' && !comment.issue.unavailable;
+        const linked = !!trackers[comment.issue?.provider] && !comment.issue.unavailable;
         // closing the thread closes the issue in the owner's repository: owner only
         if (linked && !isOwner(req)) return void json(res, 403, { error: { code: 'forbidden', message: 'Закрыть тред с issue может только владелец сайта.' } });
         if (comment.status === change.status || (change.status === 'open' && !comment.status)) return void json(res, 200, { ok: true }); // nothing to do (e.g. a second click)
         try {
-          await github.onStatus(spaceOf(req), comment, change.status); // one status: the issue follows
+          await trackerOf(spaceOf(req), comment).onStatus(spaceOf(req), comment, change.status); // one status: the issue follows
         } catch (err) {
           const code = err?.code ?? 'network';
-          return void json(res, code === 'rate_limited' ? 429 : 502, { error: { code, message: `Статус не изменён: ${err?.message ?? 'GitHub недоступен.'}` } });
+          return void json(res, code === 'rate_limited' ? 429 : 502, { error: { code, message: `Статус не изменён: ${err?.message ?? `${trackerOf(spaceOf(req), comment).label} недоступен.`}` } });
         }
         comment.status = change.status;
         delete comment.resolvedVia;
@@ -228,7 +248,7 @@ const server = createServer(async (req, res) => {
         const known = comment.replies.find((r) => r.id === reply.id);
         if (!known) comment.replies.push({ ...reply, commentId: id });
         persist();
-        if (!known) github.onReply(spaceOf(req), comment, comment.replies.at(-1)); // → issue comment
+        if (!known) trackerOf(spaceOf(req), comment).onReply(spaceOf(req), comment, comment.replies.at(-1)); // → issue comment / note
         console.log(`[feedback] ответ ${reply.author?.name ?? '?'} → ${id}: "${reply.text}"`);
         return void json(res, 201, { ok: true, attachments: urls });
       }
@@ -237,18 +257,18 @@ const server = createServer(async (req, res) => {
         if (!reply) return void json(res, 404, { error: 'not found' });
         if (req.method === 'PATCH') {
           const patch = JSON.parse((await readBody(req)).toString('utf8'));
-          if (reply.origin) return void json(res, 403, { error: 'written on GitHub' });
+          if (reply.origin) return void json(res, 403, { error: `written on ${reply.origin}` });
           reply.text = String(patch.text ?? reply.text);
           reply.updatedAt = patch.updatedAt ?? new Date().toISOString();
           persist();
-          github.onReplyEdit(spaceOf(req), comment, reply);
+          trackerOf(spaceOf(req), comment).onReplyEdit(spaceOf(req), comment, reply);
           return void json(res, 200, { ok: true });
         }
         if (req.method === 'DELETE') {
-          if (reply.origin) return void json(res, 403, { error: 'written on GitHub' });
+          if (reply.origin) return void json(res, 403, { error: `written on ${reply.origin}` });
           comment.replies = comment.replies.filter((r) => r.id !== replyId);
           persist();
-          github.onReplyDelete(spaceOf(req), comment, reply);
+          trackerOf(spaceOf(req), comment).onReplyDelete(spaceOf(req), comment, reply);
           return void json(res, 200, { ok: true });
         }
       }
@@ -289,5 +309,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Comenta demo: http://localhost:${PORT}`);
-  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : github.oauth ? (github.bot ? ' (issues от имени бота приложения)' : ' (без приватного ключа: issues от вашего имени)') : ' (GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1)'}`);
+  console.log(`Настройки (GitHub или GitLab): http://localhost:${PORT}/demo/settings.html`);
+  console.log(`  GitHub: ${mock ? 'тестовый GitHub' : github.oauth ? (github.bot ? 'issues от имени бота приложения' : 'без приватного ключа: issues от вашего имени') : 'GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1'}`);
+  console.log(`  GitLab: ${glMock ? 'тестовый GitLab' : gitlab.oauth ? `OAuth-приложения: ${gitlab.instances.join(', ')}` : 'OAuth-приложение не настроено (GITLAB_CLIENT_ID / GITLAB_CLIENT_SECRET или GITLAB_MOCK=1), можно подключиться по токену'}`);
 });

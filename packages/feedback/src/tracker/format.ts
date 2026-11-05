@@ -24,7 +24,7 @@ export function neutralize(text: string): string {
   return text
     .replace(/<!--/g, '&lt;!--')
     .replace(/(^|[^\w`])@(?=[\w-])/g, '$1@​')
-    .replace(/(^|\s)#(?=\d)/g, '$1#​');
+    .replace(/(^|\s)([#!])(?=\d)/g, '$1$2​');
 }
 
 const cell = (s: string) => neutralize(s).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
@@ -51,28 +51,43 @@ export function issueTitle(p: FeedbackPayload, max = 72): string {
 
 export interface UploadedAttachment {
   attachment: FeedbackAttachment;
-  /** Page on GitHub that plays / shows the file. */
+  /** Page on the tracker that plays / shows the file. */
   htmlUrl: string;
   /** Raw file URL (used for inline images). */
   rawUrl?: string;
 }
 
+export interface BodyOptions {
+  /** Link to the thread on your site (default: page URL + `#comenta=<id>`). */
+  threadUrl?: string;
+  /**
+   * Embed recordings as `![caption](url)`: GitLab renders such links to audio / video files as players.
+   * Default false (GitHub shows a link to the file).
+   */
+  embedMedia?: boolean;
+}
+
+/** Markdown lines for uploaded recordings and the ones that could not be uploaded. */
+export function attachmentLines(all: FeedbackAttachment[] | undefined, uploads: UploadedAttachment[], embedMedia = false): string[] {
+  const lines: string[] = [];
+  for (const u of uploads) {
+    const a = u.attachment;
+    if (a.mimeType.startsWith('image/')) lines.push(`![${cell(a.name)}](${u.rawUrl ?? `${u.htmlUrl}?raw=true`})`);
+    else if (embedMedia) lines.push(`${attachmentCaption(a)}`, '', `![${attachmentCaption(a)}](${u.rawUrl ?? u.htmlUrl})`, '');
+    else lines.push(`- [${attachmentCaption(a)}](${u.htmlUrl})`);
+  }
+  for (const a of (all ?? []).filter((a) => !uploads.some((u) => u.attachment.id === a.id))) lines.push(`- ${attachmentCaption(a)} (файл не загружен)`);
+  return lines;
+}
+
 /** Issue body: the comment, recordings, where on the page it was left, and the hidden id marker. */
-export function issueBody(p: FeedbackPayload, uploads: UploadedAttachment[] = [], opts: { threadUrl?: string } = {}): string {
+export function issueBody(p: FeedbackPayload, uploads: UploadedAttachment[] = [], opts: BodyOptions = {}): string {
   const lines: string[] = [];
   const text = p.text.trim();
   if (text) lines.push(neutralize(text), '');
 
-  const notUploaded = (p.attachments ?? []).filter((a) => !uploads.some((u) => u.attachment.id === a.id));
-  if (uploads.length || notUploaded.length) {
-    for (const u of uploads) {
-      const a = u.attachment;
-      if (a.mimeType.startsWith('image/')) lines.push(`![${cell(a.name)}](${u.rawUrl ?? `${u.htmlUrl}?raw=true`})`);
-      else lines.push(`- [${attachmentCaption(a)}](${u.htmlUrl})`);
-    }
-    for (const a of notUploaded) lines.push(`- ${attachmentCaption(a)} (файл не загружен)`);
-    lines.push('');
-  }
+  const media = attachmentLines(p.attachments, uploads, opts.embedMedia);
+  if (media.length) lines.push(...media, '');
 
   const rows: Array<[string, string]> = [];
   if (p.kind) rows.push(['Категория', `${KIND_EMOJI[p.kind]} ${KIND_NAME[p.kind]}`]);

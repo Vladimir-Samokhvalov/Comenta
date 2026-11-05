@@ -2,8 +2,14 @@ import { h } from '../ui/h';
 import { SETTINGS_STYLES } from './styles';
 
 /**
- * `<comenta-settings endpoint="/api/github">` — the site owner's page for the GitHub integration:
- * sign in with GitHub, pick a repository (searchable) and, optionally, a Project v2, save, sign out.
+ * `<comenta-settings endpoint="/api/github">` — the site owner's page for the tracker integration:
+ * sign in, pick a repository / project (searchable) and, on GitHub, optionally a Project v2, save, sign out.
+ *
+ * `providers="github gitlab"` offers a choice of tracker (a site connects exactly one); `gitlab-endpoint`
+ * (default `/api/gitlab`) is where the GitLab backend lives. GitLab sign-in asks for the GitLab address
+ * (gitlab.com or self-hosted) and sends `url` along: `GET {gitlab-endpoint}/auth/login?return=&url=`,
+ * `POST {gitlab-endpoint}/auth/token { token, url }`, `GET /repos?q=` (search when the list was cut),
+ * `PUT /config { id, repo }`. Statuses carry `active` (this tracker is the site's) and `blockedBy`.
  *
  * It talks only to your backend (see README, "GitHub"); the token never reaches the browser:
  *
@@ -28,6 +34,10 @@ export interface SettingsAccount {
   scopes?: string[];
 }
 export interface SettingsRepo {
+  /** GitLab project id. */
+  id?: number;
+  /** Human name (GitLab). */
+  title?: string;
   fullName: string;
   owner: string;
   name: string;
@@ -44,12 +54,24 @@ export interface SettingsProject {
   closed?: boolean;
 }
 export interface SettingsConfig {
-  repo: { owner: string; name: string; fullName: string; htmlUrl?: string };
+  repo: { owner: string; name: string; fullName: string; htmlUrl?: string; id?: number; title?: string };
   project?: SettingsProject | null;
 }
+export type SettingsProvider = 'github' | 'gitlab';
+
 export interface SettingsStatus {
-  /** A GitHub App is configured on the server, so "Sign in with GitHub" works. */
+  provider?: SettingsProvider;
+  /** A GitHub App / GitLab OAuth application is configured on the server, so "Sign in" works. */
   oauth: boolean;
+  /** This tracker is the site's (connected, or configured and not signed out on purpose). */
+  active?: boolean;
+  /** The site uses the other tracker: `GitHub` / `GitLab`. */
+  blockedBy?: string;
+  /** GitLab: instances with an OAuth application, and the address to offer first. */
+  instances?: string[];
+  defaultUrl?: string;
+  /** GitLab: the instance the owner is connected to. */
+  instanceUrl?: string;
   /** The server accepts a personal access token. */
   pat: boolean;
   connected: boolean;
@@ -94,6 +116,11 @@ function svg(doc: Document, cls: string, viewBox: string, d: string, filled = fa
 const GH_PATH =
   'M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z';
 const ghLogo = (doc: Document, cls: string) => svg(doc, cls, '0 0 16 16', GH_PATH, true);
+// GitLab's tanuki (Simple Icons, CC0)
+const GL_PATH =
+  'm23.6 9.593-.034-.086L20.3.98a.851.851 0 0 0-.336-.405.875.875 0 0 0-1 .054.875.875 0 0 0-.29.44l-2.205 6.748H7.538L5.332 1.07a.857.857 0 0 0-.29-.441.875.875 0 0 0-1-.054.859.859 0 0 0-.336.405L.433 9.502l-.032.086a6.066 6.066 0 0 0 2.012 7.01l.011.009.03.021 4.976 3.727 2.462 1.863 1.5 1.132a1.009 1.009 0 0 0 1.22 0l1.499-1.132 2.462-1.863 5.006-3.749.012-.01a6.068 6.068 0 0 0 2.01-7.003z';
+const glLogo = (doc: Document, cls: string) => svg(doc, cls, '0 0 24 24', GL_PATH, true);
+const logo = (p: SettingsProvider, doc: Document, cls: string) => (p === 'gitlab' ? glLogo(doc, cls) : ghLogo(doc, cls));
 const searchIcon = (doc: Document) => svg(doc, 'cs-combo-icon', '0 0 16 16', 'M7 12.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11zM11 11l3.5 3.5');
 
 export const SETTINGS_TAG = 'comenta-settings';
@@ -153,6 +180,52 @@ const M = {
       .join(' '),
 };
 
+type Messages = typeof M;
+
+/** GitLab wording; everything not listed is the same as for GitHub. */
+const GL_M: Partial<Messages> & {
+  instance: string;
+  instanceHint: string;
+  instanceAt: (host: string) => string;
+  searchMore: string;
+  searching: string;
+} = {
+  title: 'Интеграция с GitLab',
+  sub: 'Комментарии с сайта будут превращаться в issues в выбранном проекте GitLab: на gitlab.com или на вашем сервере.',
+  login: 'Войти через GitLab',
+  loginHint: 'GitLab попросит разрешить доступ (права api и read_user). Токен хранится на вашем сервере, браузер его не видит.',
+  expired: 'Доступ к GitLab истёк или был отозван. Войдите заново, чтобы комментарии снова попадали в issues.',
+  sessionExpired: 'Сессия входа в GitLab истекла. Войдите заново, чтобы менять настройки.',
+  noOauth: 'Вход через GitLab не настроен на сервере: нет OAuth-приложения. Для локальной разработки можно вставить токен.',
+  patHint: 'Personal access token с правами api (GitLab → Preferences → Access tokens).',
+  nothing: 'Сервер не поддерживает ни вход через GitLab, ни токен. Проверьте настройки сервера.',
+  logoutConfirm: 'Отключить GitLab?',
+  repo: 'Проект',
+  repoPlaceholder: 'Найти проект…',
+  repoHint: 'Показаны проекты, где у вас роль Reporter или выше, в том числе проекты групп.',
+  reposLoading: 'Загружаем проекты…',
+  reposEmpty: 'Нет проектов, где у вас роль Reporter или выше. Создайте проект в GitLab или попросите доступ.',
+  noIssues: 'issues выкл.',
+  notConfigured: 'Проект ещё не выбран: комментарии пока не попадают в GitLab.',
+  scopes: (s: string[]) => `Токену не хватает прав: ${s.join(', ')}. Выйдите и войдите снова, чтобы выдать их.`,
+  ownedBy: (login: string) => `GitLab уже подключил @${login}. Войдите этим аккаунтом, чтобы изменить настройки.`,
+  syncProblem: (msg: string | undefined, pending: number) =>
+    [msg ? `Последняя ошибка отправки в GitLab: ${msg}` : '', pending ? `Ждут отправки: ${pending} ${plural(pending, 'комментарий', 'комментария', 'комментариев')}. Мы повторим автоматически.` : '']
+      .filter(Boolean)
+      .join(' '),
+  instance: 'Адрес GitLab',
+  instanceHint: 'gitlab.com или адрес вашего сервера, например https://gitlab.example.com',
+  instanceAt: (host: string) => `на ${host}`,
+  searchMore: 'Показаны не все проекты: начните вводить название, чтобы искать по всем.',
+  searching: 'Ищем в GitLab…',
+};
+
+const PROVIDER_NAMES: Record<SettingsProvider, string> = { github: 'GitHub', gitlab: 'GitLab' };
+const CHOOSE = {
+  label: 'Куда отправлять комментарии',
+  blocked: (other: string) => `Сайт уже подключён к ${other}. Сайт работает с одним трекером: чтобы перейти, сначала отключите ${other}.`,
+};
+
 function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10;
   const m100 = n % 100;
@@ -163,9 +236,13 @@ function plural(n: number, one: string, few: string, many: string): string {
 
 interface State {
   phase: 'loading' | 'error' | 'signedOut' | 'connected';
+  /** The tracker shown. */
+  provider: SettingsProvider;
+  /** Statuses of every offered tracker (null: could not be read). */
+  statuses: Partial<Record<SettingsProvider, SettingsStatus | null>>;
   status: SettingsStatus | null;
   error: ApiError | null;
-  repos: { loading: boolean; items: SettingsRepo[]; error: ApiError | null };
+  repos: { loading: boolean; items: SettingsRepo[]; error: ApiError | null; complete?: boolean; search?: { q: string; items: SettingsRepo[]; loading: boolean } | null };
   projects: { owner: string | null; loading: boolean; items: SettingsProject[]; error: ApiError | null };
   repo: string | null;
   projectId: string | null;
@@ -192,6 +269,8 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private card!: HTMLDivElement;
     private st: State = {
       phase: 'loading',
+      provider: 'github',
+      statuses: {},
       status: null,
       error: null,
       repos: { loading: false, items: [], error: null },
@@ -216,8 +295,10 @@ export function createSettingsElementClass(): CustomElementConstructor {
       account?: HTMLElement;
     } = {};
 
+    private searchTimer: ReturnType<typeof setTimeout> | undefined;
+
     static get observedAttributes() {
-      return ['endpoint'];
+      return ['endpoint', 'gitlab-endpoint', 'providers'];
     }
 
     constructor() {
@@ -225,11 +306,27 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.root = this.attachShadow({ mode: 'open' });
     }
 
+    /** The GitHub backend. */
     get endpoint(): string {
       return (this.getAttribute('endpoint') || '/api/github').replace(/\/$/, '');
     }
     set endpoint(v: string) {
       this.setAttribute('endpoint', v);
+    }
+
+    /** Trackers offered, in order: `providers="github gitlab"`. Default: GitHub only. */
+    get providers(): SettingsProvider[] {
+      const list = (this.getAttribute('providers') || 'github').split(/[\s,]+/).filter((p): p is SettingsProvider => p === 'github' || p === 'gitlab');
+      return list.length ? [...new Set(list)] : ['github'];
+    }
+
+    private base(p: SettingsProvider = this.st.provider): string {
+      return p === 'gitlab' ? (this.getAttribute('gitlab-endpoint') || '/api/gitlab').replace(/\/$/, '') : this.endpoint;
+    }
+
+    /** Messages of the tracker shown. */
+    private get M(): Messages & Partial<typeof GL_M> {
+      return this.st.provider === 'gitlab' ? { ...M, ...GL_M } : M;
     }
 
     connectedCallback() {
@@ -253,17 +350,26 @@ export function createSettingsElementClass(): CustomElementConstructor {
       // an error from the OAuth callback (?comenta_error=...) is shown once
       const url = new URL(window.location.href);
       const cbError = url.searchParams.get('comenta_error');
-      if (cbError) {
+      const cbProvider = url.searchParams.get('comenta_provider');
+      if (cbError || cbProvider) {
         url.searchParams.delete('comenta_error');
+        url.searchParams.delete('comenta_provider');
         history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
       }
-      try {
-        const status = await this.api<SettingsStatus>('GET', '/status');
-        this.applyStatus(status);
+      const providers = this.providers;
+      const results = await Promise.all(providers.map((p) => this.api<SettingsStatus>('GET', '/status', undefined, p).then((s) => ({ p, s, e: null as ApiError | null }), (e) => ({ p, s: null, e: asError(e) }))));
+      this.st.statuses = Object.fromEntries(results.map((r) => [r.p, r.s]));
+      // the site's tracker; else the one the sign-in came back from; else the one shown; else the first
+      const active = results.find((r) => r.s?.active)?.p;
+      const back = providers.find((p) => p === cbProvider);
+      this.st.provider = active ?? back ?? (providers.includes(this.st.provider) ? this.st.provider : providers[0]);
+      const mine = results.find((r) => r.p === this.st.provider)!;
+      if (mine.s) {
+        this.applyStatus(mine.s);
         if (cbError) this.st.notice = { kind: 'error', text: cbError };
-      } catch (err) {
+      } else {
         this.st.phase = 'error';
-        this.st.error = asError(err);
+        this.st.error = mine.e;
       }
       this.render();
       if ((this.st.phase as State['phase']) === 'connected') void this.loadRepos();
@@ -276,17 +382,28 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.st.phase = status.connected ? 'connected' : 'signedOut';
       this.st.repo = status.config?.repo.fullName ?? null;
       this.st.projectId = status.config?.project?.id ?? null;
+      this.st.statuses[this.st.provider] = status;
       this.query = '';
+    }
+
+    /** Show another tracker (only while none is the site's). */
+    private choose(p: SettingsProvider) {
+      if (p === this.st.provider) return;
+      this.st.provider = p;
+      this.st.notice = null;
+      this.st.repos = { loading: false, items: [], error: null };
+      this.st.projects = { owner: null, loading: false, items: [], error: null };
+      void this.reload(); // fresh: the other tracker may have been connected or disconnected meanwhile
     }
 
     // ------------------------------------------------------------ server
 
-    private async api<T>(method: string, path: string, body?: unknown): Promise<T> {
+    private async api<T>(method: string, path: string, body?: unknown, provider: SettingsProvider = this.st.provider): Promise<T> {
       const doFetch = this.fetchImpl ?? window.fetch.bind(window);
       const extra = typeof this.headers === 'function' ? this.headers() : this.headers;
       let res: Response;
       try {
-        res = await doFetch(this.endpoint + path, {
+        res = await doFetch(this.base(provider) + path, {
           method,
           credentials: 'same-origin',
           headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...extra },
@@ -305,7 +422,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     /** Token expired mid-session: back to the sign-in view with the "expired" banner. */
     private handleAuthError(err: ApiError): boolean {
       if (err.code !== 'unauthorized') return false;
-      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired', syncing: !!this.st.status?.bot };
+      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired', syncing: !!this.st.status?.bot, account: undefined };
       this.applyStatus(status);
       this.render();
       return true;
@@ -315,17 +432,39 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.st.repos = { loading: true, items: this.st.repos.items, error: null };
       this.renderRepos();
       try {
-        const { items } = await this.api<{ items: SettingsRepo[] }>('GET', '/repos');
-        this.st.repos = { loading: false, items, error: null };
+        const { items, complete } = await this.api<{ items: SettingsRepo[]; complete?: boolean }>('GET', '/repos');
+        this.st.repos = { loading: false, items, error: null, complete: complete !== false, search: null };
       } catch (err) {
         const e = asError(err);
         if (this.handleAuthError(e)) return;
         this.st.repos = { loading: false, items: [], error: e };
       }
       this.renderRepos();
+      if (this.st.provider !== 'github') return; // Projects v2 are GitHub's
       const owner = this.selectedOwner();
       if (owner) void this.loadProjects(owner);
       else this.renderProjects();
+    }
+
+    /** The list was cut (very many GitLab projects): ask the server for what the owner types. */
+    private searchServer(q: string) {
+      clearTimeout(this.searchTimer);
+      const query = q.trim();
+      if (this.st.repos.complete !== false || query.length < 2) {
+        if (this.st.repos.search) this.st.repos.search = null;
+        return;
+      }
+      this.st.repos.search = { q: query, items: this.st.repos.search?.items ?? [], loading: true };
+      this.searchTimer = setTimeout(async () => {
+        try {
+          const { items } = await this.api<{ items: SettingsRepo[] }>('GET', `/repos?q=${encodeURIComponent(query)}`);
+          if (this.st.repos.search?.q !== query) return;
+          this.st.repos.search = { q: query, items, loading: false };
+        } catch {
+          if (this.st.repos.search?.q === query) this.st.repos.search = { q: query, items: [], loading: false };
+        }
+        this.renderRepos();
+      }, 300);
     }
 
     private async loadProjects(owner: string) {
@@ -351,9 +490,13 @@ export function createSettingsElementClass(): CustomElementConstructor {
       return this.st.repo ? this.st.repo.split('/')[0] : null;
     }
 
+    /** GitLab address typed on the sign-in view. */
+    private instance = '';
+
     private login() {
       const back = window.location.pathname + window.location.search;
-      window.location.assign(`${this.endpoint}/auth/login?return=${encodeURIComponent(back)}`);
+      const extra = this.st.provider === 'gitlab' ? `&url=${encodeURIComponent(this.instance || this.st.status?.defaultUrl || '')}` : '';
+      window.location.assign(`${this.base()}/auth/login?return=${encodeURIComponent(back)}${extra}`);
     }
 
     private async connectToken(token: string) {
@@ -361,7 +504,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.st.notice = null;
       this.render();
       try {
-        const status = await this.api<SettingsStatus>('POST', '/auth/token', { token });
+        const status = await this.api<SettingsStatus>('POST', '/auth/token', this.st.provider === 'gitlab' ? { token, url: this.instance || this.st.status?.defaultUrl } : { token });
         this.applyStatus(status);
         this.st.busy = false;
         this.render();
@@ -394,7 +537,9 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.st.notice = null;
       this.renderFooter();
       try {
-        const { config } = await this.api<{ config: SettingsConfig }>('PUT', '/config', { repo: this.st.repo, projectId: this.st.projectId });
+        const picked = [...this.st.repos.items, ...(this.st.repos.search?.items ?? [])].find((r) => r.fullName === this.st.repo);
+        const body = this.st.provider === 'gitlab' ? { repo: this.st.repo, id: picked?.id ?? (this.st.status?.config?.repo.fullName === this.st.repo ? this.st.status?.config?.repo.id : undefined) } : { repo: this.st.repo, projectId: this.st.projectId };
+        const { config } = await this.api<{ config: SettingsConfig }>('PUT', '/config', body);
         if (this.st.status) this.st.status = { ...this.st.status, config };
         this.st.notice = { kind: 'ok', text: M.saved };
         this.dispatchEvent(new CustomEvent('comenta-settings-save', { detail: config, bubbles: true, composed: true }));
@@ -412,8 +557,9 @@ export function createSettingsElementClass(): CustomElementConstructor {
 
     private render() {
       const d = document;
+      const M = this.M;
       const head = h(d, 'div', { class: 'cs-head' }, [
-        ghLogo(d, 'cs-logo'),
+        logo(this.st.provider, d, 'cs-logo'),
         h(d, 'div', {}, [h(d, 'h2', { class: 'cs-title' }, [M.title]), h(d, 'p', { class: 'cs-sub' }, [M.sub])]),
       ]);
       this.refs = {};
@@ -431,8 +577,41 @@ export function createSettingsElementClass(): CustomElementConstructor {
         default:
           body = this.connectedView();
       }
-      this.card.replaceChildren(head, body);
+      const chooser = this.chooser();
+      this.card.replaceChildren(...(chooser ? [head, chooser, body] : [head, body]));
       this.card.setAttribute('data-phase', this.st.phase);
+      this.card.setAttribute('data-provider', this.st.provider);
+    }
+
+    /** GitHub | GitLab switch, when more than one tracker is offered. The other one is locked while one is in use. */
+    private chooser(): HTMLElement | null {
+      const providers = this.providers;
+      if (providers.length < 2) return null;
+      const d = document;
+      const activeOne = providers.find((p) => this.st.statuses[p]?.active);
+      const tabs = providers.map((p) => {
+        const locked = !!activeOne && activeOne !== p;
+        const b = h(
+          d,
+          'button',
+          {
+            type: 'button',
+            role: 'radio',
+            class: 'cs-choice',
+            'data-provider': p,
+            'aria-checked': p === this.st.provider ? 'true' : 'false',
+            title: locked ? CHOOSE.blocked(PROVIDER_NAMES[activeOne!]) : null,
+          },
+          [logo(p, d, ''), PROVIDER_NAMES[p]],
+        );
+        b.disabled = locked;
+        b.addEventListener('click', () => this.choose(p));
+        return b;
+      });
+      return h(d, 'div', { class: 'cs-chooser' }, [
+        h(d, 'span', { class: 'cs-label' }, [CHOOSE.label]),
+        h(d, 'div', { class: 'cs-choices', role: 'radiogroup', 'aria-label': CHOOSE.label }, tabs),
+      ]);
     }
 
     private note(kind: 'error' | 'warn' | 'ok' | 'info', text: string, action?: string, onAction?: () => void): HTMLElement {
@@ -449,26 +628,47 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private signedOutView(): HTMLElement {
       const d = document;
       const s = this.st.status!;
+      const M = this.M;
+      const gl = this.st.provider === 'gitlab';
       const kids: Node[] = [];
+      if (s.blockedBy) kids.push(this.note('info', CHOOSE.blocked(s.blockedBy)));
       if (s.reason === 'expired') kids.push(s.syncing ? this.note('info', M.sessionExpired) : this.note('warn', M.expired));
       if (s.owner) kids.push(this.note('info', M.ownedBy(s.owner)));
       if (this.st.notice?.kind === 'error') kids.push(this.note('error', this.st.notice.text));
+      if (gl && (s.oauth || s.pat)) {
+        // gitlab.com or a self-hosted GitLab: the address goes along with the sign-in
+        if (!this.instance) this.instance = s.defaultUrl ?? 'https://gitlab.com';
+        const listId = 'cs-instances';
+        const input = h(d, 'input', { class: 'cs-input cs-instance', id: 'cs-instance', type: 'url', inputmode: 'url', autocomplete: 'url', spellcheck: 'false', list: listId, placeholder: 'https://gitlab.com', 'aria-label': GL_M.instance });
+        input.value = this.instance;
+        input.addEventListener('input', () => (this.instance = input.value.trim()));
+        const options = [...new Set([...(s.instances ?? []), 'https://gitlab.com'])].map((u) => h(d, 'option', { value: u }));
+        kids.push(
+          h(d, 'div', { class: 'cs-field' }, [
+            h(d, 'label', { class: 'cs-label', for: 'cs-instance' }, [GL_M.instance]),
+            input,
+            h(d, 'datalist', { id: listId }, options),
+            h(d, 'span', { class: 'cs-hint' }, [GL_M.instanceHint]),
+          ]),
+        );
+      }
       if (s.oauth) {
-        const btn = h(d, 'button', { type: 'button', class: 'cs-btn cs-btn-gh cs-login' }, [ghLogo(d, ''), s.reason === 'expired' ? M.relogin : M.login]);
+        const btn = h(d, 'button', { type: 'button', class: `cs-btn cs-btn-gh cs-login${gl ? ' cs-btn-gl' : ''}` }, [logo(this.st.provider, d, ''), s.reason === 'expired' ? M.relogin : M.login]);
+        btn.disabled = !!s.blockedBy;
         btn.addEventListener('click', () => this.login());
         kids.push(h(d, 'div', { class: 'cs-field' }, [btn, h(d, 'span', { class: 'cs-hint' }, [M.loginHint])]));
       } else if (s.pat) {
         kids.push(this.note('info', M.noOauth));
       }
       if (s.pat) {
-        const input = h(d, 'input', { class: 'cs-input cs-token', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'ghp_… / github_pat_…', 'aria-label': M.patLabel });
+        const input = h(d, 'input', { class: 'cs-input cs-token', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: gl ? 'glpat-…' : 'ghp_… / github_pat_…', 'aria-label': M.patLabel });
         const go = h(d, 'button', { type: 'submit', class: 'cs-btn cs-btn-primary' }, [M.patConnect]);
         const form = h(d, 'form', { class: 'cs-field' }, [
           h(d, 'label', { class: 'cs-label' }, [M.patLabel]),
           h(d, 'div', { class: 'cs-row' }, [input, go]),
           h(d, 'span', { class: 'cs-hint' }, [M.patHint]),
         ]);
-        const sync = () => (go.disabled = this.st.busy || !input.value.trim());
+        const sync = () => (go.disabled = this.st.busy || !input.value.trim() || !!s.blockedBy);
         input.addEventListener('input', sync);
         sync();
         form.addEventListener('submit', (e) => {
@@ -487,6 +687,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private connectedView(): HTMLElement {
       const d = document;
       const s = this.st.status!;
+      const M = this.M;
       const kids: Node[] = [];
       const account = h(d, 'div', { class: 'cs-account-wrap' });
       this.refs.account = account;
@@ -495,10 +696,10 @@ export function createSettingsElementClass(): CustomElementConstructor {
       if (s.sync?.lastError || s.sync?.pending) kids.push(this.note('warn', M.syncProblem(s.sync.lastError?.message, s.sync.pending)));
 
       const reposBox = h(d, 'div', { class: 'cs-field' });
-      const projectsBox = h(d, 'div', { class: 'cs-field' });
+      const projectsBox = this.st.provider === 'github' ? h(d, 'div', { class: 'cs-field' }) : undefined;
       const footer = h(d, 'div', { class: 'cs-footer-wrap' });
       Object.assign(this.refs, { reposBox, projectsBox, footer });
-      kids.push(reposBox, projectsBox, footer);
+      kids.push(...(projectsBox ? [reposBox, projectsBox, footer] : [reposBox, footer]));
       const body = h(d, 'div', { class: 'cs-body' }, kids);
       this.renderAccount();
       this.buildRepoField();
@@ -512,6 +713,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const a = this.st.status?.account;
       if (!box || !a) return;
       const d = document;
+      const M = this.M;
       if (this.st.confirmLogout) {
         const yes = h(d, 'button', { type: 'button', class: 'cs-btn cs-btn-sm cs-btn-danger cs-logout-yes' }, [M.logoutYes]);
         const no = h(d, 'button', { type: 'button', class: 'cs-btn cs-btn-sm' }, [M.logoutNo]);
@@ -540,7 +742,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
           h(d, 'img', { class: 'cs-avatar', src: a.avatarUrl, alt: '', width: 36, height: 36 }),
           h(d, 'div', { class: 'cs-who' }, [
             h(d, 'b', { class: 'cs-name' }, [a.name || a.login]),
-            h(d, 'a', { href: a.htmlUrl, target: '_blank', rel: 'noopener noreferrer' }, [`@${a.login}`]),
+            h(d, 'a', { href: a.htmlUrl, target: '_blank', rel: 'noopener noreferrer' }, [`@${a.login}`, ...(this.st.status?.instanceUrl ? [` · ${GL_M.instanceAt(hostOf(this.st.status.instanceUrl))}`] : [])]),
           ]),
           out,
         ]),
@@ -552,6 +754,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private buildRepoField() {
       const box = this.refs.reposBox!;
       const d = document;
+      const M = this.M;
       const id = 'cs-repos';
       const input = h(d, 'input', {
         class: 'cs-input cs-repo-input',
@@ -578,6 +781,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       input.addEventListener('input', () => {
         this.query = input.value;
         this.active = 0;
+        this.searchServer(this.query);
         this.openList();
       });
       input.addEventListener('keydown', (e) => this.onComboKey(e));
@@ -601,14 +805,17 @@ export function createSettingsElementClass(): CustomElementConstructor {
 
     private filtered(): SettingsRepo[] {
       const q = this.query.trim().toLowerCase();
-      const items = this.st.repos.items;
-      return q ? items.filter((r) => r.fullName.toLowerCase().includes(q)) : items;
+      const search = this.st.repos.search;
+      const extra = search && q.includes(search.q.toLowerCase()) ? search.items.filter((r) => !this.st.repos.items.some((x) => x.fullName === r.fullName)) : [];
+      const items = [...this.st.repos.items, ...extra];
+      return q ? items.filter((r) => `${r.fullName} ${r.title ?? ''}`.toLowerCase().includes(q)) : items;
     }
 
     private renderRepos() {
       const box = this.refs.reposBox;
       if (!box) return;
       const d = document;
+      const M = this.M;
       const state = box.querySelector('.cs-repos-state')!;
       const r = this.st.repos;
       const input = this.refs.input!;
@@ -617,7 +824,8 @@ export function createSettingsElementClass(): CustomElementConstructor {
       if (r.error) state.replaceChildren(this.note('error', r.error.message, M.retry, () => void this.loadRepos()));
       else if (!r.loading && !r.items.length) state.replaceChildren(this.note('info', this.st.status?.app ? M.reposEmptyApp : M.reposEmpty), ...this.manageLink());
       else if (r.loading) state.replaceChildren(h(d, 'span', { class: 'cs-hint', role: 'status' }, [M.reposLoading]));
-      else state.replaceChildren(h(d, 'span', { class: 'cs-hint' }, [M.repoHint]), ...this.manageLink());
+      else if (r.search?.loading) state.replaceChildren(h(d, 'span', { class: 'cs-hint', role: 'status' }, [GL_M.searching]));
+      else state.replaceChildren(h(d, 'span', { class: 'cs-hint' }, [r.complete === false ? GL_M.searchMore : M.repoHint]), ...this.manageLink());
       if (this.listOpen) this.renderList();
     }
 
@@ -625,7 +833,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     private manageLink(): HTMLElement[] {
       if (!this.st.status?.app) return [];
       const back = window.location.pathname + window.location.search;
-      return [h(document, 'a', { class: 'cs-manage', href: `${this.endpoint}/auth/install?return=${encodeURIComponent(back)}`, target: '_blank', rel: 'noopener noreferrer' }, [M.manageRepos])];
+      return [h(document, 'a', { class: 'cs-manage', href: `${this.base()}/auth/install?return=${encodeURIComponent(back)}`, target: '_blank', rel: 'noopener noreferrer' }, [M.manageRepos])];
     }
 
     private openList() {
@@ -648,6 +856,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const { list, input } = this.refs;
       if (!list || !input) return;
       const d = document;
+      const M = this.M;
       const items = this.filtered();
       if (this.active >= items.length) this.active = items.length - 1;
       list.hidden = false;
@@ -666,7 +875,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
             d,
             'li',
             { class: `cs-opt${i === this.active ? ' cs-active' : ''}`, role: 'option', id: `cs-opt-${i}`, 'aria-selected': r.fullName === this.st.repo ? 'true' : 'false', 'data-repo': r.fullName },
-            [h(d, 'span', { class: 'cs-opt-name' }, [h(d, 'span', {}, [`${r.owner}/`]), r.name]), ...tags],
+            [h(d, 'span', { class: 'cs-opt-name', title: r.title ?? null }, [h(d, 'span', {}, [`${r.owner}/`]), r.name]), ...tags],
           );
           li.addEventListener('click', () => this.pickRepo(r));
           li.addEventListener('mousemove', () => {
@@ -714,7 +923,9 @@ export function createSettingsElementClass(): CustomElementConstructor {
       this.query = '';
       this.closeList();
       this.refs.input!.value = r.fullName;
-      if (ownerChanged) {
+      if (this.st.provider !== 'github') {
+        // no Projects v2 outside GitHub
+      } else if (ownerChanged) {
         this.st.projectId = null;
         void this.loadProjects(r.owner);
       } else this.renderProjects();
@@ -727,6 +938,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const box = this.refs.projectsBox;
       if (!box) return;
       const d = document;
+      const M = this.M;
       const p = this.st.projects;
       const owner = this.selectedOwner();
       const select = h(d, 'select', { class: 'cs-select cs-project', id: 'cs-project' });
@@ -760,6 +972,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const box = this.refs.footer;
       if (!box) return;
       const d = document;
+      const M = this.M;
       const cfg = this.st.status?.config;
       const dirty = (cfg?.repo.fullName ?? null) !== this.st.repo || (cfg?.project?.id ?? null) !== this.st.projectId;
       const save = h(d, 'button', { type: 'button', class: 'cs-btn cs-btn-primary cs-save' }, [this.st.saving ? M.saving : M.save]);
@@ -781,6 +994,14 @@ export function createSettingsElementClass(): CustomElementConstructor {
       box.replaceChildren(...kids);
     }
   };
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function asError(err: unknown): ApiError {

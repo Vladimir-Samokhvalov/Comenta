@@ -39,6 +39,18 @@ export const SETTINGS_STYLES = /* css */ `
 .cs-btn-gh { background: #1f2328; border-color: #1f2328; color: #fff; height: 40px; padding: 0 18px; align-self: flex-start; }
 .cs-btn-gh:hover:not(:disabled) { background: #32383f; }
 .cs-btn-gh svg { width: 18px; height: 18px; }
+.cs-btn-gl { background: #6b4fbb; border-color: #6b4fbb; }
+.cs-btn-gl:hover:not(:disabled) { background: #5c43a6; }
+.cs-chooser { display: flex; flex-direction: column; gap: 8px; padding: 14px 20px 0; }
+.cs-choices { display: inline-flex; align-self: flex-start; padding: 3px; gap: 3px; border: 1px solid var(--cs-line); border-radius: 10px; background: var(--cs-soft); }
+.cs-choice { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px; border: 0; border-radius: 7px; background: none; color: var(--cs-muted); font: inherit; font-weight: 500; cursor: pointer; }
+.cs-choice svg { width: 16px; height: 16px; }
+.cs-choice[aria-checked="true"] { background: var(--cs-bg); color: var(--cs-ink); box-shadow: 0 1px 2px rgba(20,20,19,.12); }
+.cs-choice[data-provider="gitlab"][aria-checked="true"] svg { color: #e24329; }
+.cs-choice:hover:not(:disabled):not([aria-checked="true"]) { color: var(--cs-ink); }
+.cs-choice:disabled { opacity: .45; cursor: not-allowed; }
+.cs-choice:focus-visible { outline: 2px solid var(--cs-accent); outline-offset: 1px; }
+.cs[data-provider="gitlab"] .cs-logo { color: #e24329; }
 .cs-btn-danger { color: var(--cs-danger); border-color: rgba(var(--cs-danger-rgb), .35); }
 .cs-btn-danger:hover:not(:disabled) { background: rgba(var(--cs-danger-rgb), .08); }
 .cs-btn-sm { height: 30px; padding: 0 10px; font-size: 13px; }

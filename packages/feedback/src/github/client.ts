@@ -1,3 +1,4 @@
+import { nextLink } from '../tracker/errors';
 import { GitHubError, MESSAGES, rateLimitMessage } from './errors';
 
 export interface GitHubClientOptions {
@@ -151,15 +152,6 @@ export class GitHubClient {
     }
     return res.data?.data as T;
   }
-}
-
-function nextLink(link: string | null): string | null {
-  if (!link) return null;
-  for (const part of link.split(',')) {
-    const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
-    if (m) return m[1];
-  }
-  return null;
 }
 
 export function scopeMessage(missing?: string[]): string {

@@ -1,8 +1,22 @@
 import type { FeedbackIssueLink, FeedbackPayload, FeedbackReply, FeedbackReplyLink } from '../types';
+import { nextLink } from '../tracker/errors';
+import type { UploadedAttachment } from '../tracker/format';
+import {
+  keepUploadLinks,
+  mergeComments,
+  replyCommentBody,
+  replyFromComment as trackerReply,
+  replyIdOf,
+  type MergeResult,
+  type TrackerComment,
+  type TrackerIssueState,
+} from '../tracker/threads';
 import type { GitHubClient } from './client';
 import { GitHubError } from './errors';
-import { attachmentCaption, neutralize, type UploadedAttachment } from './issue';
 import { uploadAttachments, type GitHubTarget, type SyncFile } from './sync';
+
+export { replyMarker, replyIdOf, applyIssueState, applyIssueStatus, replyCommentBody, forViewer } from '../tracker/threads';
+export type { MergeResult, Viewer } from '../tracker/threads';
 
 /*
  * Two-way sync of a Comenta thread with its GitHub issue.
@@ -28,18 +42,8 @@ export interface GitHubIssueComment {
   user?: { login: string; avatar_url?: string; html_url?: string; type?: string } | null;
 }
 
-/** The part of an issue Comenta mirrors. */
-export interface GitHubIssueState {
-  number: number;
-  state: 'open' | 'closed';
-  stateReason: string | null;
-  closedAt?: string;
-  updatedAt: string;
-  /** `owner/name` the issue lives in now (differs from the link after a transfer). */
-  repo?: string;
-  /** Who closed it (only single-issue answers carry it, not listings). */
-  closedBy?: { login: string; avatarUrl?: string; url?: string };
-}
+/** The part of an issue Comenta mirrors (see `TrackerIssueState`). */
+export type GitHubIssueState = TrackerIssueState;
 
 interface IssueJson {
   number: number;
@@ -53,14 +57,6 @@ interface IssueJson {
 }
 
 const repoPath = (t: Pick<GitHubTarget, 'owner' | 'repo'>) => `/repos/${encodeURIComponent(t.owner)}/${encodeURIComponent(t.repo)}`;
-
-/** Hidden marker in a comment Comenta posted: echo protection and idempotent retries. */
-export const replyMarker = (replyId: string) => `<!-- comenta:reply=${replyId} -->`;
-
-/** The Comenta reply id a comment was posted for, or null for comments written on GitHub. */
-export function replyIdOf(body: string | null | undefined): string | null {
-  return /<!-- comenta:reply=([\w-]+) -->/.exec(body ?? '')?.[1] ?? null;
-}
 
 /** `{ owner, repo }` of a link's `owner/name`. */
 export function targetOf(issue: Pick<FeedbackIssueLink, 'repo'>): { owner: string; repo: string } {
@@ -82,58 +78,6 @@ export function issueStateOf(json: IssueJson): GitHubIssueState {
   const m = /\/repos\/([^/]+)\/([^/]+)$/.exec(json.repository_url ?? '');
   if (m) out.repo = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}`;
   return out;
-}
-
-/**
- * Copy a fresh state onto the link. Returns true when something the widget shows changed.
- * A snapshot older than the one applied last (`stateAt`) is ignored, so a poll that was already
- * on its way can't undo a close or reopen made a moment ago.
- */
-export function applyIssueState(link: FeedbackIssueLink, s: GitHubIssueState | { unavailable: NonNullable<FeedbackIssueLink['unavailable']> }): boolean {
-  const before = JSON.stringify([link.state, link.stateReason, link.closedAt, link.unavailable]);
-  if ('unavailable' in s) {
-    link.unavailable = s.unavailable;
-  } else if (s.repo && s.repo.toLowerCase() !== link.repo.toLowerCase()) {
-    link.unavailable = 'transferred'; // the old link still redirects on GitHub
-  } else {
-    delete link.unavailable;
-    if (link.stateAt && s.updatedAt < link.stateAt) return false;
-    link.state = s.state;
-    link.stateReason = s.stateReason;
-    link.stateAt = s.updatedAt;
-    if (s.closedAt) link.closedAt = s.closedAt;
-    else delete link.closedAt;
-  }
-  return before !== JSON.stringify([link.state, link.stateReason, link.closedAt, link.unavailable]);
-}
-
-/**
- * One status for the thread and its issue: make the thread's status follow the issue
- * (closed on GitHub → `resolved`, reopened → `open`). Call after `applyIssueState`.
- * Returns true when the thread changed. Does nothing for unavailable issues: their status lives in Comenta.
- */
-export function applyIssueStatus(payload: FeedbackPayload, s?: Pick<GitHubIssueState, 'closedBy'>): boolean {
-  const link = payload.issue;
-  if (!link?.state || link.unavailable) return false;
-  const before = JSON.stringify([payload.status, payload.resolvedBy, payload.resolvedAt, payload.resolvedVia]);
-  if (link.state === 'closed') {
-    const known = payload.status === 'resolved';
-    const by = s?.closedBy;
-    // closed in Comenta (we closed the issue ourselves) keeps its author; closed on GitHub names the GitHub user
-    if (!known || (payload.resolvedVia === 'github' && by)) {
-      payload.status = 'resolved';
-      payload.resolvedVia = 'github';
-      payload.resolvedAt = link.closedAt ?? payload.resolvedAt ?? new Date().toISOString();
-      if (by) payload.resolvedBy = { id: `github:${by.login.toLowerCase()}`, name: by.login, ...(by.avatarUrl ? { avatarUrl: by.avatarUrl } : {}), ...(by.url ? { url: by.url } : {}) };
-      else if (!known) delete payload.resolvedBy;
-    }
-  } else if (payload.status === 'resolved') {
-    payload.status = 'open';
-    delete payload.resolvedBy;
-    delete payload.resolvedAt;
-    delete payload.resolvedVia;
-  }
-  return before !== JSON.stringify([payload.status, payload.resolvedBy, payload.resolvedAt, payload.resolvedVia]);
 }
 
 /**
@@ -250,21 +194,6 @@ export async function fetchRepoActivity(client: GitHubClient, target: Pick<GitHu
   return { issues, comments, cursor: { issues: iss.since, comments: com.since, etags: { issues: iss.etag, comments: com.etag } } };
 }
 
-/** Comment text for a Comenta reply: `**Имя Фамилия:** текст`, recordings, hidden marker. */
-export function replyCommentBody(reply: FeedbackReply, uploads: UploadedAttachment[] = [], guest = 'Гость'): string {
-  const name = neutralize(reply.author?.name?.trim() || guest).replace(/[*_`]/g, '\\$&').replace(/\s*\n\s*/g, ' ');
-  const text = neutralize(reply.text.trim());
-  const lines = [text ? `**${name}:** ${text}` : `**${name}:**`];
-  const notUploaded = (reply.attachments ?? []).filter((a) => !uploads.some((u) => u.attachment.id === a.id));
-  if (uploads.length || notUploaded.length) {
-    lines.push('');
-    for (const u of uploads) lines.push(u.attachment.mimeType.startsWith('image/') ? `![${u.attachment.name}](${u.rawUrl ?? `${u.htmlUrl}?raw=true`})` : `- [${attachmentCaption(u.attachment)}](${u.htmlUrl})`);
-    for (const a of notUploaded) lines.push(`- ${attachmentCaption(a)} (файл не загружен)`);
-  }
-  lines.push('', replyMarker(reply.id));
-  return lines.join('\n');
-}
-
 /** The comment Comenta already posted for this reply (found by its marker), or null. */
 export async function findReplyComment(client: GitHubClient, issue: Pick<FeedbackIssueLink, 'repo' | 'number'>, replyId: string): Promise<GitHubIssueComment | null> {
   const res = await fetchIssueComments(client, issue);
@@ -304,7 +233,7 @@ export async function updateReplyComment(client: GitHubClient, issue: Pick<Feedb
   if (reply.attachments?.length) {
     const old = await client.request<GitHubIssueComment | null>('GET', path, { allow: [404] });
     if (old.status === 404) return 'gone';
-    uploads = keepUploadLinks(old.data?.body ?? '', reply);
+    uploads = keepUploadLinks(old.data?.body ?? '', reply.attachments);
   }
   const res = await client.request('PATCH', path, { body: { body: replyCommentBody(reply, uploads, guestName) }, allow: [404], retry: true });
   return res.status === 404 ? 'gone' : 'updated';
@@ -315,116 +244,27 @@ export async function deleteReplyComment(client: GitHubClient, issue: Pick<Feedb
   await client.request('DELETE', `${repoPath(targetOf(issue))}/issues/comments/${link.id}`, { allow: [404] });
 }
 
-function keepUploadLinks(body: string, reply: FeedbackReply): UploadedAttachment[] {
-  const out: UploadedAttachment[] = [];
-  for (const a of reply.attachments ?? []) {
-    const caption = attachmentCaption(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const m = new RegExp(`\\[${caption}\\]\\(([^)\\s]+)\\)`).exec(body);
-    if (m) out.push({ attachment: a, htmlUrl: m[1] });
-  }
-  return out;
+/** The provider-neutral view of a GitHub issue comment. */
+export function commentOf(c: GitHubIssueComment): TrackerComment {
+  return {
+    id: c.id,
+    body: c.body ?? '',
+    url: c.html_url,
+    createdAt: c.created_at,
+    updatedAt: c.updated_at,
+    author: c.user ? { login: c.user.login, ...(c.user.avatar_url ? { avatarUrl: c.user.avatar_url } : {}), ...(c.user.html_url ? { url: c.user.html_url } : {}) } : null,
+  };
 }
 
 /** A reply in the widget for a comment written on GitHub. */
 export function replyFromComment(c: GitHubIssueComment, commentId: string): FeedbackReply {
-  const login = c.user?.login ?? 'ghost';
-  const reply: FeedbackReply = {
-    id: `github-${c.id}`,
-    commentId,
-    text: (c.body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim(),
-    createdAt: c.created_at,
-    author: { id: `github:${login.toLowerCase()}`, name: login, ...(c.user?.avatar_url ? { avatarUrl: c.user.avatar_url } : {}), ...(c.user?.html_url ? { url: c.user.html_url } : {}) },
-    origin: 'github',
-    link: { provider: 'github', id: c.id, url: c.html_url },
-  };
-  if (c.updated_at && c.updated_at !== c.created_at) reply.updatedAt = c.updated_at;
-  return reply;
-}
-
-export interface MergeResult {
-  /** The thread's replies after the merge (a new array when `changed`). */
-  replies: FeedbackReply[];
-  changed: boolean;
-  /** Comenta replies whose GitHub comment was found by its marker (link was missing). */
-  linked: string[];
+  return trackerReply(commentOf(c), commentId, 'github');
 }
 
 /**
- * Bring GitHub comments into a thread:
- * - comments carrying a Comenta reply marker are our own replies: only their link is recorded (no echo);
- * - new comments become replies with `origin: 'github'`, edited ones are updated;
- * - `complete`: the list is every comment of the issue, so imported replies missing from it were deleted.
+ * Bring GitHub comments into a thread (see `mergeComments`): our own replies are only linked,
+ * new comments become replies with `origin: 'github'`, edits follow, and with `complete` deletions too.
  */
 export function mergeIssueComments(payload: Pick<FeedbackPayload, 'id' | 'replies'>, comments: GitHubIssueComment[], opts: { complete?: boolean } = {}): MergeResult {
-  const replies = [...(payload.replies ?? [])];
-  let changed = false;
-  const linked: string[] = [];
-  const seen = new Set<string>();
-  for (const c of comments) {
-    seen.add(String(c.id));
-    const own = replyIdOf(c.body);
-    if (own) {
-      const i = replies.findIndex((r) => r.id === own);
-      if (i !== -1 && !replies[i].link) {
-        replies[i] = { ...replies[i], link: { provider: 'github', id: c.id, url: c.html_url } };
-        linked.push(own);
-        changed = true;
-      }
-      continue;
-    }
-    const fresh = replyFromComment(c, payload.id);
-    const i = replies.findIndex((r) => r.origin === 'github' && String(r.link?.id) === String(c.id));
-    if (i === -1) {
-      replies.push(fresh);
-      changed = true;
-    } else if (JSON.stringify(replies[i]) !== JSON.stringify(fresh)) {
-      replies[i] = fresh;
-      changed = true;
-    }
-  }
-  let out = replies;
-  if (opts.complete) {
-    out = replies.filter((r) => r.origin !== 'github' || seen.has(String(r.link?.id)));
-    if (out.length !== replies.length) changed = true;
-  }
-  if (changed) out = out.map((r, i) => [r, i] as const).sort(([a, ai], [b, bi]) => a.createdAt.localeCompare(b.createdAt) || ai - bi).map(([r]) => r);
-  return { replies: out, changed, linked };
-}
-
-/** Who is looking at the list: the site owner, or a visitor with their author id (site user or guest). */
-export interface Viewer {
-  owner?: boolean;
-  /** `author.id` of the person, as the widget sends it in comments and replies. */
-  id?: string;
-}
-
-/**
- * What a viewer may see. GitHub discussions can be internal, so only the site owner and the
- * comment's own author get the issue state and the replies written on GitHub.
- * Call it on your server for every list answer. `true` / `false` is shorthand for owner / nobody.
- */
-export function forViewer<T extends FeedbackPayload>(payload: T, viewer: Viewer | boolean): T {
-  const v: Viewer = typeof viewer === 'boolean' ? { owner: viewer } : viewer;
-  if (v.owner || (!!v.id && payload.author?.id === v.id)) return payload;
-  const out = { ...payload };
-  if (out.issue) {
-    const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, stateAt: _t, ...link } = out.issue;
-    out.issue = link;
-  }
-  if (out.replies?.some((r) => r.origin)) out.replies = out.replies.filter((r) => !r.origin);
-  // they see that the thread is closed, not who closed it on GitHub
-  if (out.resolvedVia) {
-    delete out.resolvedBy;
-    delete out.resolvedVia;
-  }
-  return out;
-}
-
-function nextLink(link: string | null): string | null {
-  if (!link) return null;
-  for (const part of link.split(',')) {
-    const m = /<([^>]+)>\s*;\s*rel="next"/.exec(part);
-    if (m) return m[1];
-  }
-  return null;
+  return mergeComments(payload, comments.map(commentOf), { provider: 'github', complete: opts.complete });
 }
