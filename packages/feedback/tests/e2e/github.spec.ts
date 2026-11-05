@@ -1,7 +1,3 @@
-import { spawn } from 'node:child_process';
-import { readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { widget } from './helpers';
 
@@ -227,19 +223,6 @@ test.describe('GitHub settings', () => {
     expect((await ghState(page)).refreshes).toBeGreaterThan(0);
     await page.goto('/demo/settings.html');
     await expect(s(page).name).toHaveText('Владимир');
-  });
-
-  test('pnpm github-app:setup registers the app from a manifest and saves its credentials', async ({ page, baseURL }) => {
-    const file = join(tmpdir(), `comenta-app-${Date.now()}.json`);
-    const child = spawn('node', ['demo/github-app-setup.mjs'], {
-      env: { ...process.env, SETUP_PORT: '5177', GITHUB_APP_FILE: file, GITHUB_WEB_URL: `${baseURL}/__github`, GITHUB_API_URL: `${baseURL}/__github/api` },
-    });
-    await new Promise((r) => child.stdout.once('data', r));
-    await page.goto('http://localhost:5177/');
-    await expect(page.locator('h1')).toHaveText('GitHub App создан');
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ slug: 'comenta-mock', clientId: 'mock-client', clientSecret: 'mock-secret' });
-    rmSync(file);
-    child.kill();
   });
 
   test('repository with issues turned off: clear error on save', async ({ page }) => {

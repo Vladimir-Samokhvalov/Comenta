@@ -49,7 +49,6 @@ function initialState() {
     },
     tokens: new Map(), // token → { scopes, revoked }
     codes: new Map(), // code → what the app may do
-    manifests: new Map(), // manifest code → manifest
     issues: [], // { repo, number, title, body, node_id, html_url }
     files: new Map(), // `${repo}@${branch}:${path}` → { size }
     branches: new Map(), // repo → Set
@@ -69,6 +68,7 @@ function initialState() {
 
 export function createGitHubMock(base) {
   let s = initialState();
+  const manifests = new Map(); // code → manifest; survives reset: other e2e files reset concurrently
   const json = (res, status, data, headers = {}) => res.writeHead(status, { 'Content-Type': 'application/json', ...headers }).end(JSON.stringify(data));
   const readBody = async (req) => {
     const chunks = [];
@@ -129,9 +129,9 @@ export function createGitHubMock(base) {
     }
     if (req.method === 'POST' && /^\/app-manifests\/[^/]+\/conversions$/.test(path)) {
       const code = path.split('/')[2];
-      const manifest = s.manifests.get(code);
+      const manifest = manifests.get(code);
       if (!manifest) return json(res, 404, { message: 'Not Found' });
-      s.manifests.delete(code);
+      manifests.delete(code);
       return json(res, 201, { id: 1, slug: 'comenta-mock', client_id: 'mock-client', client_secret: 'mock-secret', pem: 'mock-pem', webhook_secret: null, html_url: `${base}/web/apps/comenta-mock`, name: manifest.name });
     }
     const tok = tokenOf(req);
@@ -260,7 +260,7 @@ export function createGitHubMock(base) {
     if (path === '/settings/apps/new' && req.method === 'POST') {
       const manifest = JSON.parse((await readBody(req)).manifest ?? '{}');
       const code = `manifest_${rand()}`;
-      s.manifests.set(code, manifest);
+      manifests.set(code, manifest);
       const state = url.searchParams.get('state');
       res.writeHead(302, { Location: `${manifest.redirect_url}?code=${code}${state ? `&state=${encodeURIComponent(state)}` : ''}` }).end();
       return true;
