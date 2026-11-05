@@ -349,12 +349,11 @@ export const STYLES = /* css */ `
 .ph-msg-name[data-color="4"] { color: #b7791f; }
 .ph-msg-name[data-color="5"] { color: #c2417a; }
 .ph-msg-name[data-color="6"] { color: #1d8a99; }
-.ph-msg-github .ph-bubble { border-style: dashed; }
-.ph-msg-github .ph-msg-name { display: flex; align-items: center; gap: 5px; }
+.ph-msg-github .ph-msg-name { display: flex; align-items: center; gap: 4px; }
 .ph-msg-name a { color: inherit; text-decoration: none; }
 .ph-msg-name a:hover { text-decoration: underline; }
-.ph-avatar { width: 16px; height: 16px; border-radius: 50%; flex: none; }
-.ph-msg-source { font-weight: 400; color: var(--ph-muted) !important; font-size: 11px; }
+.ph-avatar { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.ph-msg-source { font-weight: 400; color: var(--ph-muted) !important; font-size: 11px; text-decoration: none; }
 .ph-msg-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 19px; }
 .ph-bubble .ph-view-text { max-height: none; overflow: visible; }
 .ph-bubble .ph-attachments { margin-top: 4px; }

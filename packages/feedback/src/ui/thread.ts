@@ -305,7 +305,7 @@ export class Thread {
     if (external) {
       wrap.classList.add('ph-msg-github');
       const a = item.author;
-      const avatar = a?.avatarUrl && /^(https?:\/\/|\/)/.test(a.avatarUrl) ? h(d, 'img', { class: 'ph-avatar', src: a.avatarUrl, alt: '', width: 16, height: 16, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null;
+      const avatar = a?.avatarUrl && /^(https?:\/\/|\/)/.test(a.avatarUrl) ? h(d, 'img', { class: 'ph-avatar', src: a.avatarUrl, alt: '', width: 14, height: 14, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null;
       const name = a?.url && /^https?:\/\//.test(a.url) ? h(d, 'a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, [displayName(a, L)]) : displayName(a, L);
       const source = reply?.link?.url && /^https?:\/\//.test(reply.link.url) ? h(d, 'a', { class: 'ph-msg-source', href: reply.link.url, target: '_blank', rel: 'noopener noreferrer' }, [L.fromGitHub]) : h(d, 'span', { class: 'ph-msg-source' }, [L.fromGitHub]);
       bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(a) }, [avatar, name, source]));
