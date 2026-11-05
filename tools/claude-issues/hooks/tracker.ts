@@ -350,7 +350,7 @@ export function fromGitlabNote(raw: Json): Comment | undefined {
 
 // ---------------------------------------------------------------- calls
 
-/** Open and closed issues, most recently updated first, PRs/MRs left out. */
+/** Open issues, most recently updated first, PRs/MRs left out. */
 export async function listIssues(io: Io, repo: Repo): Promise<Issue[]> {
   const issues: Issue[] = []
   for (let page = 1; issues.length < MAX_ISSUES; page++) {
@@ -359,12 +359,12 @@ export async function listIssues(io: Io, repo: Repo): Promise<Issue[]> {
         ? await api(
             io,
             repo,
-            `repos/${repo.path}/issues?state=all&sort=updated&direction=desc&per_page=${PAGE}&page=${page}`,
+            `repos/${repo.path}/issues?state=open&sort=updated&direction=desc&per_page=${PAGE}&page=${page}`,
           )
         : await api(
             io,
             repo,
-            `${gitlabProject(repo)}/issues?state=all&order_by=updated_at&sort=desc&per_page=${PAGE}&page=${page}`,
+            `${gitlabProject(repo)}/issues?state=opened&order_by=updated_at&sort=desc&per_page=${PAGE}&page=${page}`,
           )
     if (!Array.isArray(batch)) break
     for (const raw of batch) {
@@ -404,10 +404,24 @@ export async function closeIssue(io: Io, repo: Repo, number: number): Promise<vo
 
 // ---------------------------------------------------------------- text
 
+/**
+ * Markdown as the panel draws it: HTML comments (hidden markers such as
+ * Comenta's `<!-- comenta:id=… -->`) dropped, and the HTML tags the panel's
+ * Markdown would print as text (`<sub>`, `<details>`, ...) unwrapped.
+ */
+export function cleanMarkdown(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(?:sub|sup|small|span|div|p|details|summary|b|i|u|em|strong|kbd|ins|del|center|font)\b[^>]*>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /** What "Вставить в чат" puts in the prompt. */
 export function issueAsContext(repo: Repo, issue: Issue): string {
   const kind = repo.provider === 'github' ? 'GitHub' : 'GitLab'
-  const body = issue.body.trim()
+  const body = cleanMarkdown(issue.body)
   const cut = body.length > 4000 ? `${body.slice(0, 4000)}\n…` : body
   return (
     `${kind} issue #${issue.number}: ${issue.title}\n${issue.url}\n` +
