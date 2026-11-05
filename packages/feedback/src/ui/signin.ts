@@ -30,7 +30,6 @@ export class SignIn {
     this.error = h(d, 'p', { class: 'ph-signin-error', role: 'alert', hidden: true });
     this.el = h(d, 'div', { class: 'ph-signin', role: 'dialog', 'aria-label': labels.signInTitle, hidden: true }, [
       h(d, 'div', { class: 'ph-signin-head' }, [h(d, 'span', { class: 'ph-signin-title' }, [labels.signInTitle]), close]),
-      h(d, 'p', { class: 'ph-signin-hint' }, [labels.signInHint]),
       this.body,
       this.error,
     ]);

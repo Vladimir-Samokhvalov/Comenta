@@ -281,7 +281,6 @@ export interface FeedbackLabels {
   fromTracker: (provider: string) => string;
   /** Sign-in card (with the `auth` option). */
   signInTitle: string;
-  signInHint: string;
   signInWith: (provider: string) => string;
   signInFailed: string;
   signInPopupBlocked: string;

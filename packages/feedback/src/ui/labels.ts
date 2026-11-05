@@ -92,7 +92,6 @@ export const DEFAULT_LABELS: FeedbackLabels = {
   },
   fromTracker: (provider) => `из ${DEFAULT_LABELS.providerName(provider)}`,
   signInTitle: 'Войдите, чтобы комментировать',
-  signInHint: 'Комментарии видны команде сайта под вашим именем.',
   signInWith: (provider) => `Войти через ${provider}`,
   signInFailed: 'Не удалось войти. Попробуйте ещё раз.',
   signInPopupBlocked: 'Браузер заблокировал окно входа. Разрешите всплывающие окна или нажмите ещё раз.',

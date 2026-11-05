@@ -115,9 +115,9 @@ export const STYLES = /* css */ `
 .ph-pos-bottom-left .ph-tip, .ph-pos-top-left .ph-tip { right: auto; left: 0; }
 
 .ph-signin { width: 300px; max-width: calc(100vw - 40px); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-.ph-signin-head { display: flex; align-items: flex-start; gap: 8px; }
+.ph-signin-head { display: flex; align-items: center; gap: 8px; }
 .ph-signin-title { flex: 1; font-weight: 600; font-size: 14px; }
-.ph-signin-hint { color: var(--ph-muted); font-size: 12px; margin: 0; }
+.ph-signin-list { display: flex; flex-direction: column; gap: 8px; }
 .ph-signin .ph-btn { width: 100%; justify-content: center; }
 .ph-signin-error { color: var(--ph-danger, #c62828); font-size: 12px; margin: 0; }
 .ph-menu { min-width: 240px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
