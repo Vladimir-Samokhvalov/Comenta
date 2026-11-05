@@ -4,6 +4,7 @@
  *
  *   <script src="feedback.iife.js"
  *           data-endpoint="/api/feedback"      (omit → console + localStorage adapter)
+ *           data-auth="/api/auth"              (visitors sign in through your server: Google, Yandex, Keycloak…)
  *           data-position="bottom-right"
  *           data-author-id="42" data-author-name="Anna"
  *           data-ignore-selector="[data-feedback-ignore]"
@@ -38,6 +39,7 @@ export function optionsFromDataset(ds: DOMStringMap): FeedbackOptions {
   if (ds.zIndex && !Number.isNaN(Number(ds.zIndex))) opts.zIndex = Number(ds.zIndex);
   if (ds.authorId || ds.authorName) opts.author = { id: ds.authorId, name: ds.authorName };
   if (opts.author && (ds.authorRole === 'owner' || ds.authorRole === 'member')) opts.author.role = ds.authorRole;
+  if (ds.auth) opts.auth = { endpoint: ds.auth };
   if (ds.enabled === 'false') opts.enabled = false;
   return opts;
 }

@@ -13,7 +13,12 @@
 //   GITHUB_MOCK=1 / GITLAB_MOCK=1               → fake GitHub at /__github, fake GitLab at /__gitlab, no account needed
 //   A site uses one tracker: GitHub or GitLab. Replies are mirrored to the linked issue; the tracker's state and
 //   comments come back for the owner and the comment's author.
-// The demo does not check permissions (who may resolve, edit, delete): a real backend must.
+//   /api/auth/*                                 → sign-in of visitors: Google, Yandex, Keycloak (demo/auth.mjs); every
+//                                                 /api/feedback route needs it. AUTH_MOCK=1 (default without providers)
+//                                                 → fake providers at /__auth to sign in as Владимир (owner), Анна, Борис.
+// The author of comments and replies comes from the session. Only the author or the site owner edits, deletes,
+// resolves; threads with an issue are closed by the owner only. The tracker settings (/api/github, /api/gitlab)
+// are for the site owner (COMENTA_OWNERS or Keycloak's owner role).
 // Header X-Comenta-Space (or cookie comenta_space) keeps separate stores (the e2e tests use one per test).
 import { createServer } from 'node:http';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -23,13 +28,24 @@ import { createGitHubIntegration } from './github.mjs';
 import { MOCK_APP, createGitHubMock } from './github-mock.mjs';
 import { createGitLabIntegration } from './gitlab.mjs';
 import { MOCK_GITLAB, createGitLabMock } from './gitlab-mock.mjs';
+import { createAuth } from './auth.mjs';
+import { createAuthMock } from './auth-mock.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const LOG = process.env.FEEDBACK_LOG ?? join(ROOT, 'demo', 'feedback.log');
 const PORT = Number(process.env.PORT ?? 5174);
 const UPLOADS = process.env.FEEDBACK_UPLOADS ?? join(ROOT, 'demo', 'uploads');
+const HOST = process.env.HOST ?? '127.0.0.1'; // only this computer; HOST=0.0.0.0 opens the demo to the network
 const TYPES = {
   '.webm': 'video/webm', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.map': 'application/json', '.json': 'application/json' };
+
+/**
+ * Recordings and screenshots the server accepts and serves: anything else (HTML, JS, SVG…) is refused, so an
+ * upload can never run as a page of this site. MEDIA_TYPES also sets the Content-Type they are served with.
+ */
+const MEDIA_TYPES = {
+  '.webm': 'video/webm', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /** space → comments. Loaded from the log on start, written back after every change. */
 const store = new Map();
@@ -71,6 +87,22 @@ if (glMock) {
     GITLAB_CLIENT_SECRET: process.env.GITLAB_CLIENT_SECRET ?? MOCK_GITLAB.clientSecret,
   });
 }
+const auth = createAuth({ root: ROOT, mockBase: `http://localhost:${PORT}/__auth` });
+const authMock = auth.mock ? createAuthMock(`http://localhost:${PORT}/__auth`) : null;
+
+/** Writes per signed-in user: COMENTA_RATE_LIMIT=<count>/<minutes> (default 30/10), 0 turns it off. */
+const [rateCount, rateMinutes] = (process.env.COMENTA_RATE_LIMIT ?? '30/10').split('/').map(Number);
+const writes = new Map(); // user id → timestamps
+function overLimit(userId) {
+  if (!rateCount) return false;
+  const since = Date.now() - (rateMinutes || 10) * 60_000;
+  const list = (writes.get(userId) ?? []).filter((t) => t > since);
+  if (list.length >= rateCount) return writes.set(userId, list), true;
+  list.push(Date.now());
+  writes.set(userId, list);
+  return false;
+}
+
 const hooks = {
   root: ROOT,
   uploadsDir: UPLOADS,
@@ -85,13 +117,14 @@ const trackers = { github, gitlab };
 /** The tracker a comment's issue lives in, or the one the site uses now (for comments without an issue yet). */
 const trackerOf = (space, comment) => trackers[comment?.issue?.provider] ?? (gitlab.active(space) ? gitlab : github);
 /**
- * GitHub state and comments written on GitHub are shown to the site owner and to the comment's author.
- * Here the owner is whoever has the GitHub settings session, or (demo only, the page has a user switcher
- * and no login) a request with `X-Comenta-Role: owner`; the viewer's author id comes from `X-Comenta-User`.
- * A real backend takes both from its own authentication.
+ * GitHub / GitLab state and comments written on the tracker are shown to the site owner and to the comment's author.
+ * Both come from the visitor's session (demo/auth.mjs), never from the request.
  */
-const isOwner = (req) => github.isOwner(req, spaceOf(req)) || gitlab.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
-const viewerOf = (req) => ({ owner: isOwner(req), id: typeof req.headers['x-comenta-user'] === 'string' ? req.headers['x-comenta-user'].slice(0, 200) : undefined });
+const isOwner = (req) => auth.isOwner(req);
+const viewerOf = (req) => {
+  const u = auth.user(req);
+  return { owner: isOwner(req), id: u?.id };
+};
 const listOf = (req) => {
   const k = spaceOf(req);
   if (!store.has(k)) store.set(k, []);
@@ -113,16 +146,28 @@ async function readItem(req) {
   const ctype = req.headers['content-type'] ?? '';
   const urls = {};
   const files = [];
-  if (!ctype.startsWith('multipart/form-data')) return { item: JSON.parse((await readBody(req)).toString('utf8')), urls, files };
-  const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
-  const parts = parseMultipart(await readBody(req, 50 * 1024 * 1024), boundary);
-  const item = JSON.parse(parts.find((p) => p.name === 'payload')?.data.toString('utf8') ?? 'null');
-  await mkdir(UPLOADS, { recursive: true });
+  const multipart = ctype.startsWith('multipart/form-data');
+  let item;
+  let parts = [];
+  if (!multipart) item = JSON.parse((await readBody(req)).toString('utf8'));
+  else {
+    const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
+    parts = parseMultipart(await readBody(req, 50 * 1024 * 1024), boundary);
+    item = JSON.parse(parts.find((p) => p.name === 'payload')?.data.toString('utf8') ?? 'null');
+  }
+  // The client never says where a file is: `url` is set here, and only for a file that came with this request.
+  // (A client-sent url like "/uploads/../github-app.json" would otherwise be read back and uploaded to the tracker.)
+  if (Array.isArray(item?.attachments)) {
+    item.attachments = item.attachments.filter((a) => a && typeof a === 'object' && SAFE_ID.test(String(a.id)));
+    for (const a of item.attachments) delete a.url;
+  } else if (item && typeof item === 'object') delete item.attachments;
+  if (parts.length) await mkdir(UPLOADS, { recursive: true });
   for (const p of parts.filter((p) => p.name?.startsWith('file:'))) {
-    const id = p.name.slice(5).replace(/[^a-zA-Z0-9-]/g, '');
-    const att = item?.attachments?.find((a) => a.id === id);
+    const id = p.name.slice(5);
+    const att = SAFE_ID.test(id) ? item?.attachments?.find((a) => a.id === id) : null;
     if (!att) continue;
-    const ext = (extname(p.filename ?? '') || '.webm').replace(/[^.a-z0-9]/gi, '');
+    const ext = (extname(p.filename ?? '') || '.webm').toLowerCase();
+    if (!MEDIA_TYPES[ext]) continue; // not a recording or an image: the attachment is shown as "not uploaded"
     await writeFile(join(UPLOADS, `${id}${ext}`), p.data);
     urls[id] = att.url = `/uploads/${id}${ext}`;
     files.push({ attachment: att, data: new Uint8Array(p.data) });
@@ -167,8 +212,23 @@ const server = createServer(async (req, res) => {
   try {
     if (mock && (await mock.handle(req, res, url))) return;
     if (glMock && (await glMock.handle(req, res, url))) return;
-    if (url.pathname.startsWith('/api/github/')) return void (await github.handle(req, res, url, spaceOf(req)));
-    if (url.pathname.startsWith('/api/gitlab/')) return void (await gitlab.handle(req, res, url, spaceOf(req)));
+    if (authMock && (await authMock.handle(req, res, url))) return;
+    if (url.pathname.startsWith('/api/auth/')) return void (await auth.handle(req, res, url));
+    const tracker = /^\/api\/(github|gitlab)\//.exec(url.pathname)?.[1];
+    if (tracker) {
+      // the tracker settings belong to the site owner: sign in to the site first
+      const u = auth.user(req);
+      if (!u) return void json(res, 401, { error: { code: 'signin_required', message: 'Войдите на сайт как владелец, чтобы настраивать интеграцию.' } });
+      if (!isOwner(req)) return void json(res, 403, { error: { code: 'not_owner', message: `${u.name}${u.email ? ` (${u.email})` : ''} не владелец сайта. Войдите под аккаунтом владельца.` } });
+      return void (await (tracker === 'github' ? github : gitlab).handle(req, res, url, spaceOf(req)));
+    }
+    let me = null;
+    if (url.pathname === '/api/feedback' || url.pathname.startsWith('/api/feedback/')) {
+      const u = auth.user(req);
+      if (!u) return void json(res, 401, { error: { code: 'signin_required', message: 'Войдите, чтобы оставлять комментарии.' } });
+      me = auth.authorOf(u);
+      if (req.method === 'POST' && overLimit(u.id)) return void json(res, 429, { error: { code: 'rate_limited', message: 'Слишком много сообщений подряд. Попробуйте через несколько минут.' } });
+    }
 
     if (url.pathname === '/api/feedback') {
       if (req.method === 'POST') {
@@ -183,6 +243,8 @@ const server = createServer(async (req, res) => {
         }
         const list = listOf(req);
         delete payload.issue; // set by the server only
+        delete payload.status, delete payload.resolvedBy, delete payload.resolvedAt, delete payload.resolvedVia, delete payload.replies;
+        payload.author = me; // who wrote it is the signed-in user, whatever the browser sent
         const known = list.find((c) => c.id === payload.id);
         if (!known) list.push(payload);
         persist();
@@ -221,6 +283,10 @@ const server = createServer(async (req, res) => {
       if (!isReplies && req.method === 'PATCH') {
         const change = JSON.parse((await readBody(req)).toString('utf8'));
         if (change.status !== 'open' && change.status !== 'resolved') return void json(res, 400, { error: 'bad status' });
+        // the comment's author or the site owner
+        if (!isOwner(req) && comment.author?.id !== me.id) return void json(res, 403, { error: { code: 'forbidden', message: 'Закрыть или открыть тред может его автор или владелец сайта.' } });
+        change.by = me;
+        change.at = new Date().toISOString();
         const linked = !!trackers[comment.issue?.provider] && !comment.issue.unavailable;
         // closing the thread closes the issue in the owner's repository: owner only
         if (linked && !isOwner(req)) return void json(res, 403, { error: { code: 'forbidden', message: 'Закрыть тред с issue может только владелец сайта.' } });
@@ -245,6 +311,7 @@ const server = createServer(async (req, res) => {
         comment.replies ??= [];
         delete reply.origin; // set by the server only
         delete reply.link;
+        reply.author = me;
         const known = comment.replies.find((r) => r.id === reply.id);
         if (!known) comment.replies.push({ ...reply, commentId: id });
         persist();
@@ -258,6 +325,7 @@ const server = createServer(async (req, res) => {
         if (req.method === 'PATCH') {
           const patch = JSON.parse((await readBody(req)).toString('utf8'));
           if (reply.origin) return void json(res, 403, { error: `written on ${reply.origin}` });
+          if (reply.author?.id !== me.id) return void json(res, 403, { error: { code: 'forbidden', message: 'Изменить ответ может только его автор.' } });
           reply.text = String(patch.text ?? reply.text);
           reply.updatedAt = patch.updatedAt ?? new Date().toISOString();
           persist();
@@ -266,6 +334,7 @@ const server = createServer(async (req, res) => {
         }
         if (req.method === 'DELETE') {
           if (reply.origin) return void json(res, 403, { error: `written on ${reply.origin}` });
+          if (reply.author?.id !== me.id && !isOwner(req)) return void json(res, 403, { error: { code: 'forbidden', message: 'Удалить ответ может его автор или владелец сайта.' } });
           comment.replies = comment.replies.filter((r) => r.id !== replyId);
           persist();
           trackerOf(spaceOf(req), comment).onReplyDelete(spaceOf(req), comment, reply);
@@ -277,11 +346,18 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/uploads/') && req.method === 'GET') {
-      const file = normalize(join(UPLOADS, url.pathname.slice('/uploads/'.length)));
-      if (!file.startsWith(UPLOADS)) return void res.writeHead(404).end();
-      const data = await readFile(file);
-      const ext = extname(file);
-      res.writeHead(200, { 'Content-Type': TYPES[ext] ?? 'application/octet-stream', 'Accept-Ranges': 'none', 'Cache-Control': 'no-store' });
+      const name = url.pathname.slice('/uploads/'.length);
+      const ext = extname(name).toLowerCase();
+      // only files this server wrote: <id>.<media extension>, nothing else (no HTML, no other folders)
+      if (!SAFE_ID.test(name.slice(0, name.length - ext.length)) || !MEDIA_TYPES[ext]) return void res.writeHead(404).end('not found');
+      const data = await readFile(join(UPLOADS, name));
+      res.writeHead(200, {
+        'Content-Type': MEDIA_TYPES[ext],
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Accept-Ranges': 'none',
+        'Cache-Control': 'no-store',
+      });
       res.end(data);
       return;
     }
@@ -307,9 +383,10 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Comenta demo: http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Comenta demo: http://localhost:${PORT}${HOST === '127.0.0.1' || HOST === 'localhost' ? ' (только с этого компьютера; HOST=0.0.0.0 откроет доступ из сети)' : ` (слушает ${HOST}: доступен из сети)`}`);
   console.log(`Настройки (GitHub или GitLab): http://localhost:${PORT}/demo/settings.html`);
+  console.log(`  Вход посетителей: ${auth.mock ? 'тестовые Google, Яндекс и Keycloak (AUTH_MOCK): войти может кто угодно, в т.ч. как владелец — только для разработки' : auth.providers.map((p) => p.label).join(', ')}${auth.owners.length ? `; владельцы: ${auth.owners.join(', ')}` : ''}`);
   console.log(`  GitHub: ${mock ? 'тестовый GitHub' : github.oauth ? (github.bot ? 'issues от имени бота приложения' : 'без приватного ключа: issues от вашего имени') : 'GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1'}`);
   console.log(`  GitLab: ${glMock ? 'тестовый GitLab' : gitlab.oauth ? `OAuth-приложения: ${gitlab.instances.join(', ')}` : 'OAuth-приложение не настроено (GITLAB_CLIENT_ID / GITLAB_CLIENT_SECRET или GITLAB_MOCK=1), можно подключиться по токену'}`);
 });

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { widget } from './helpers';
+import { signIn as signInSite, widget, type MockUser } from './helpers';
 
 // The demo server runs with GITHUB_MOCK=1: a fake GitHub lives at /__github (demo/github-mock.mjs).
 // Its state is global, so this file runs serially and resets it before every test
@@ -86,6 +86,7 @@ async function leaveComment(page: Page, text: string, path = '/') {
 test.beforeEach(async ({ page, context }) => {
   await page.request.post('/__github/reset');
   await useGitHubSpace(page, context);
+  await signInSite(page, 'vladimir'); // the tracker settings are for the site owner
 });
 
 test.describe('GitHub settings', () => {
@@ -567,8 +568,8 @@ test.describe('GitHub issue ↔ thread sync', () => {
     const guest = await ctx.newPage();
     await guest.addInitScript((sp) => {
       (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
-      localStorage.setItem('comenta-demo-user', 'anna');
     }, space);
+    await signInSite(guest, 'anna');
     const listed = guest.waitForResponse((r) => r.url().includes('/api/feedback') && r.request().method() === 'GET');
     await guest.goto(`/?poll=400#comenta=${res.id}`); // closed threads' pins are hidden: open it by link
     const body = JSON.stringify(await (await listed).json());
@@ -585,7 +586,8 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await ctx.close();
 
     // the owner's own browser switched to another user hides them as well
-    await widget(page).userSelect.selectOption('anna');
+    await signInSite(page, 'anna');
+    await page.evaluate(() => (window as unknown as { fb: { refreshSignIn(): Promise<boolean> } }).fb.refreshSignIn());
     await expect(github(page)).toHaveCount(0);
     await expect(state(page)).toHaveCount(0);
   });
@@ -595,10 +597,10 @@ test.describe('GitHub issue ↔ thread sync', () => {
     const visitor = async (user: string) => {
       const ctx = await browser.newContext();
       const p = await ctx.newPage();
-      await p.addInitScript(([sp, u]) => {
+      await p.addInitScript((sp) => {
         (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
-        localStorage.setItem('comenta-demo-user', u);
-      }, [space, user] as const);
+      }, space);
+      await signInSite(p, (user === 'guest' ? 'boris' : user) as MockUser); // "guest": another signed-in visitor
       return { ctx, p };
     };
     // Anna (not the owner, no GitHub session) leaves a comment that becomes issue #1
@@ -666,5 +668,60 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await control(page, { failNext: 0 });
     await expect.poll(async () => (await ghState(page)).issues.length, { timeout: 10_000 }).toBe(1);
     await expect.poll(async () => (await comments(page)).map((c) => [c.number, c.body.split('\n')[0]]), { timeout: 10_000 }).toEqual([[1, '**Владимир:** Уточнение к комментарию']]);
+  });
+});
+
+test.describe('security', () => {
+  const payload = (id: string, extra: object = {}) => ({
+    id,
+    text: 'Проверка',
+    target: { selector: '#inc', tag: 'button' },
+    page: { url: 'http://localhost/', title: 'Demo', viewport: { w: 1280, h: 800 } },
+    createdAt: new Date().toISOString(),
+    author: { id: 'guest-1', name: 'Гость' },
+    ...extra,
+  });
+  const headers = () => ({ 'X-Comenta-Space': space });
+
+  test('a client-sent attachment url never makes the server read and upload its own files', async ({ page }) => {
+    await configure(page, 'demo-owner/landing', null);
+    const id = `sec-${Date.now()}`;
+    const created = await page.request.post('/api/feedback', { data: payload(id), headers: headers() });
+    expect(created.status()).toBe(201);
+    await expect.poll(async () => (await ghState(page)).issues.length, { timeout: 10_000 }).toBe(1);
+    // a reply that points its "recording" at a file outside the uploads folder (the GitHub App private key, tokens…)
+    const evil = { id: 'evil-1', kind: 'audio', mimeType: 'audio/webm', name: 'voice.webm', url: '/uploads/../github-app.json' };
+    const reply = await page.request.post(`/api/feedback/${id}/replies`, {
+      data: { id: 'r-sec-1', text: 'смотри', createdAt: new Date().toISOString(), author: { id: 'guest-1', name: 'Гость' }, attachments: [evil] },
+      headers: headers(),
+    });
+    expect(reply.status()).toBe(201);
+    // the reply goes to GitHub, but without any file
+    await expect.poll(async () => (await (await page.request.get('/__github/state')).json()).comments.length, { timeout: 10_000 }).toBe(1);
+    expect((await ghState(page)).files).toEqual([]);
+    const stored = (await (await page.request.get('/api/feedback', { headers: headers() })).json()).find((c: { id: string }) => c.id === id);
+    expect(stored.replies[0].attachments[0].url).toBeUndefined();
+  });
+
+  test('uploads are only recordings and images, served so they can never run as a page', async ({ page }) => {
+    const id = `sec-${Date.now()}`;
+    const res = await page.request.post('/api/feedback', {
+      headers: headers(),
+      multipart: {
+        payload: JSON.stringify(payload(id, { attachments: [{ id: 'html-1', kind: 'audio', mimeType: 'audio/webm', name: 'x' }, { id: 'ok-1', kind: 'audio', mimeType: 'audio/webm', name: 'voice.webm' }] })),
+        'file:html-1': { name: 'page.html', mimeType: 'text/html', buffer: Buffer.from('<script>alert(1)</script>') },
+        'file:ok-1': { name: 'voice.webm', mimeType: 'audio/webm', buffer: Buffer.from('webm') },
+      },
+    });
+    expect(res.status()).toBe(201);
+    const { attachments } = await res.json();
+    expect(attachments).toEqual({ 'ok-1': '/uploads/ok-1.webm' });
+    expect((await page.request.get('/uploads/html-1.html')).status()).toBe(404);
+    expect((await page.request.get('/uploads/..%2fgithub-app.json')).status()).toBe(404);
+    const media = await page.request.get('/uploads/ok-1.webm');
+    expect(media.status()).toBe(200);
+    expect(media.headers()['content-type']).toBe('video/webm');
+    expect(media.headers()['x-content-type-options']).toBe('nosniff');
+    expect(media.headers()['content-security-policy']).toContain('sandbox');
   });
 });

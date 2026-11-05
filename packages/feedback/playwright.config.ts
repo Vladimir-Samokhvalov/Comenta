@@ -23,6 +23,11 @@ export default defineConfig({
       FEEDBACK_LOG: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-feedback.log`,
       FEEDBACK_UPLOADS: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-uploads`,
       // fake GitHub at /__github (demo/github-mock.mjs); fast retries
+      // fake Google / Yandex / Keycloak at /__auth (demo/auth-mock.mjs); every test signs in as the same people,
+      // so the per-user write limit is off
+      AUTH_MOCK: '1',
+      AUTH_STORE: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-auth-${Date.now()}.json`,
+      COMENTA_RATE_LIMIT: '0',
       GITHUB_MOCK: '1',
       GITHUB_STORE: `${process.env.TMPDIR ?? '/tmp'}/comenta-e2e-github-${Date.now()}.json`,
       COMENTA_GITHUB_RETRY_MS: '20',

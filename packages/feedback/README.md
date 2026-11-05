@@ -59,7 +59,7 @@ export function App() {
 ></script>
 ```
 
-Без `data-endpoint` используется `consoleAdapter`. Атрибуты: `data-endpoint`, `data-position`, `data-author-id`, `data-author-name`, `data-ignore-selector`, `data-z-index`, `data-enabled="false"`. `data-auto-init="false"` отключает автозапуск, тогда вызывайте `window.Comenta.initFeedback({...})` сами. Экземпляр после автозапуска: `window.Comenta.instance`.
+Без `data-endpoint` используется `consoleAdapter`. Атрибуты: `data-endpoint`, `data-auth` (адрес маршрутов входа, например `/api/auth`), `data-position`, `data-author-id`, `data-author-name`, `data-ignore-selector`, `data-z-index`, `data-enabled="false"`. `data-auto-init="false"` отключает автозапуск, тогда вызывайте `window.Comenta.initFeedback({...})` сами. Экземпляр после автозапуска: `window.Comenta.instance`.
 
 ## Опции
 
@@ -68,6 +68,7 @@ export function App() {
 | `adapter` | `FeedbackAdapter` | `consoleAdapter()` | Куда отправлять заявки |
 | `position` | `'bottom-right' \| 'bottom-left' \| 'top-right' \| 'top-left'` | `'bottom-right'` | Положение кнопки |
 | `author` | `{ id?, name?, role?: 'owner' \| 'member' }` | гость | Автор комментариев и ответов. `owner` может решать любые треды. Без автора виджет создаёт гостя с постоянным id в localStorage и один раз спрашивает имя |
+| `auth` | `{ endpoint, popup? }` | — | Вход посетителей через ваш сервер (Google, Яндекс, Keycloak), см. «Вход посетителей». Автор и роль владельца приходят с сервера, `author` игнорируется |
 | `enabled` | `boolean` | `true` | `false` — ничего не рендерится |
 | `ignoreSelector` | `string` | `'[data-feedback-ignore]'` | Эти элементы нельзя выбрать, и их содержимое не попадает в payload (наведение «проходит» к ближайшему разрешённому предку) |
 | `recording` | `false \| { audio?, screen?, maxDurationMs? }` | всё, что умеет браузер, 60 000 мс | Голосовые и запись экрана в форме |
@@ -80,7 +81,7 @@ export function App() {
 | `onStatusChange` | `(comment, { status, by, at }) => void` | — | Тред закрыт или открыт снова |
 | `onError` | `(error, payload) => void` | — | Если адаптер отклонил заявку |
 
-Методы экземпляра: `open()`, `close()`, `toggle()`, `isOpen()`, `update(partialOptions)`, `getComments()`, `showComments()` (открыть список комментариев), `openThread(id)` (открыть тред, `false` если его нет на странице), `getUnreadCount()`, `destroy()`. Ссылка с `#comenta=<id>` в адресе открывает тред сразу после загрузки (удобно для писем с уведомлениями). Повторный `initFeedback` сначала уничтожает предыдущий экземпляр.
+Методы экземпляра: `open()`, `close()`, `toggle()`, `isOpen()`, `update(partialOptions)`, `getComments()`, `showComments()` (открыть список комментариев), `openThread(id)` (открыть тред, `false` если его нет на странице), `getUnreadCount()`, `refreshSignIn()` (с `auth`: перечитать, кто вошёл, например после входа на самом сайте), `destroy()`. Ссылка с `#comenta=<id>` в адресе открывает тред сразу после загрузки (удобно для писем с уведомлениями). Повторный `initFeedback` сначала уничтожает предыдущий экземпляр.
 
 ## Поведение
 
@@ -209,6 +210,48 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 ```
 
 Сообщение из `Error` показывается пользователю после «Не удалось отправить: ».
+
+## Вход посетителей: Google, Яндекс, Keycloak
+
+Комментировать могут только вошедшие посетители: гостей нет. Вход проходит на вашем сервере (OAuth 2.0 / OpenID Connect с `state` и PKCE), браузер получает только HttpOnly-cookie сессии. Сервер сам подставляет автора в каждый комментарий, ответ и смену статуса и не верит `author`, который прислал браузер. Поэтому чужое имя в GitHub/GitLab подписать нельзя, а править ответ может только его автор (удалить: автор или владелец сайта, закрыть тред: его автор или владелец).
+
+```ts
+initFeedback({
+  adapter: httpAdapter({ endpoint: '/api/feedback' }),
+  auth: { endpoint: '/api/auth' }, // GET /me, GET /login/<provider>, POST /logout
+});
+```
+
+Без входа кнопка виджета открывает карточку «Войдите, чтобы комментировать» с кнопками провайдеров. Вход открывается во всплывающем окне, а после него виджет сразу включает режим комментариев. В меню (шеврон) появляется «Выйти». Если окно заблокировано, карточка об этом скажет; `auth: { endpoint, popup: false }` уводит на вход всю страницу.
+
+Серверная часть: `@comenta/feedback/auth` (без зависимостей: `fetch` и WebCrypto) и готовый образец `demo/auth.mjs`.
+
+```ts
+import { googleProvider, yandexProvider, keycloakProvider, startSignIn, finishSignIn, isSiteOwner } from '@comenta/feedback/auth';
+
+const providers = [
+  googleProvider({ clientId, clientSecret }),
+  yandexProvider({ clientId, clientSecret }),
+  keycloakProvider({ url: 'https://sso.example.com', realm: 'acme', clientId, clientSecret }), // роль comenta-owner = владелец
+];
+// /api/auth/login/:id  → const s = await startSignIn(p, { redirectUri }); сохраните s.state и s.verifier на сервере, редирект на s.url
+// /api/auth/callback/:id → сверьте state, const user = await finishSignIn(p, { code, verifier, redirectUri }); заведите сессию
+// владелец: isSiteOwner(user, { emails: ['owner@example.com'], providers })
+```
+
+**Владелец сайта** видит скрытые комментарии из трекера, закрывает треды с issue и открывает настройки GitHub/GitLab. Это тот, чей подтверждённый email указан в `COMENTA_OWNERS`, или (Keycloak) у кого есть роль `comenta-owner` (realm или client role; имя меняется в `KEYCLOAK_OWNER_ROLE`). Страница настроек сначала просит войти владельца (`<comenta-settings auth-endpoint="/api/auth">`, по умолчанию `/api/auth`), остальным пишет «не владелец сайта».
+
+### Настройка провайдеров
+
+Redirect URI для каждого: `{PUBLIC_URL}/api/auth/callback/<google|yandex|keycloak>`. Google и Яндекс принимают только https (кроме `localhost`).
+
+- **Google**: Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID → Web application. В Authorized redirect URIs добавьте адрес выше. Переменные: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
+- **Яндекс**: oauth.yandex.ru → Создать приложение → Веб-сервисы, Redirect URI выше, доступы: «Доступ к логину, имени и фамилии, полу», «Доступ к адресу электронной почты», «Доступ к портрету пользователя». Переменные: `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`.
+- **Keycloak**: в нужном realm → Clients → Create client: OpenID Connect, Client authentication **On**, Standard flow **On**, Valid redirect URIs — адрес выше, Web origins — адрес сайта. Секрет на вкладке Credentials. Роль владельца: Realm roles → Create role `comenta-owner` и назначьте её владельцам. Переменные: `KEYCLOAK_URL` (корень сервера, например `https://sso.example.com`; у старых версий с `/auth`), `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, при желании `KEYCLOAK_OWNER_ROLE`.
+
+Ещё: `COMENTA_AUTH=google,keycloak` оставляет только перечисленных, `COMENTA_OWNERS=a@example.com,b@example.com`, `PUBLIC_URL=https://site.example` (redirect URI и флаг Secure у cookie), `AUTH_STORE` (файл сессий, по умолчанию `demo/auth.json`, права 600; хранятся SHA-256 от id сессий), `COMENTA_RATE_LIMIT=30/10` (не больше 30 комментариев и ответов за 10 минут от одного пользователя, `0` выключает). Сессия живёт 30 дней.
+
+Без настроенных провайдеров демо включает тестовый вход (`AUTH_MOCK`, `/__auth`): кнопки Google, Яндекс и Keycloak ведут на страницу выбора «Владимир (владелец) / Анна / Борис». Войти так может кто угодно, в том числе владельцем, поэтому с `NODE_ENV=production` сервер без провайдеров не запускается.
 
 ## GitHub: комментарии → issues
 
@@ -341,7 +384,7 @@ res.json(comments.map((c) => forViewer(c, { owner: isOwner(req), id: currentUser
 | Ответ написан, пока issue ещё создаётся | Уходит сразу после создания issue |
 | Rate limit | Опрос ждёт до сброса лимита (`resetAt`), очередь ответов тоже |
 
-В демо-сервере это сделано в `demo/github.mjs` (раздел «thread sync»): `COMENTA_GITHUB_POLL_MS` (по умолчанию 45 000) — период опроса репозитория, `COMENTA_GITHUB_REFRESH_MS` (20 000) — как часто можно перечитывать одну issue при открытии виджета. Владельцем демо считает того, у кого есть сессия настроек GitHub, а также запросы с заголовком `X-Comenta-Role: owner`, который демо-страница шлёт, когда выбран «Владимир»; автора — по заголовку `X-Comenta-User` (id выбранного пользователя или гостя). Это только для демо: заголовки легко подделать, в настоящем бэкенде владельца и автора определяет ваша авторизация.
+В демо-сервере это сделано в `demo/github.mjs` (раздел «thread sync»): `COMENTA_GITHUB_POLL_MS` (по умолчанию 45 000) — период опроса репозитория, `COMENTA_GITHUB_REFRESH_MS` (20 000) — как часто можно перечитывать одну issue при открытии виджета. Владельца и автора демо-сервер берёт из сессии входа посетителя (см. «Вход посетителей»), заголовкам запроса не верит.
 
 ### Права
 
@@ -484,7 +527,7 @@ pnpm size           # gzip-размеры, бюджет 30 КБ
 pnpm standalone     # dist/demo-standalone.html: демо одним файлом, открывается двойным кликом
 ```
 
-Мок-сервер (`demo/server.mjs`, без зависимостей) реализует все маршруты `httpAdapter` и хранит комментарии с ответами в `demo/feedback.log` (JSON Lines), файлы записей кладёт в `demo/uploads/` и раздаёт по `/uploads/<id>.webm`, `?fail=1` отвечает 503. Права он не проверяет. Демо: `/` (в блоке настроек — адаптер, пользователь «Владимир (владелец) / Анна / Гость» для переписки в одном браузере, «враждебные стили»; параметры `?adapter=console|http|fail`, `?user=`, `?poll=<мс>`), `/demo/script-tag.html` — подключение тегом.
+Мок-сервер (`demo/server.mjs`, без зависимостей) реализует все маршруты `httpAdapter` и хранит комментарии с ответами в `demo/feedback.log` (JSON Lines), файлы записей кладёт в `demo/uploads/` и раздаёт по `/uploads/<id>.webm`, `?fail=1` отвечает 503. Кто пишет, берёт из сессии входа; править и удалять ответы, закрывать треды можно только автору или владельцу. По умолчанию сервер слушает только `127.0.0.1`; `HOST=0.0.0.0` открывает его для сети (не делайте этого с настоящими токенами GitHub/GitLab). Адрес файла вложения задаёт только сервер (присланный клиентом `url` отбрасывается), принимаются только записи и картинки (webm, mp4, m4a, ogg, png, jpg, gif, webp), и отдаются они с `X-Content-Type-Options: nosniff` и `Content-Security-Policy: sandbox`, чтобы загруженный файл не мог выполниться как страница сайта. Демо: `/` (в блоке настроек — адаптер, кто вошёл и ссылки тестового входа «Владимир (владелец) / Анна / Борис» для переписки в одном браузере, «враждебные стили»; параметры `?adapter=console|http|fail` (с `console` вход не нужен: всё хранится в браузере), `?poll=<мс>`), `/demo/script-tag.html` — подключение тегом.
 
 ## Структура
 
@@ -494,6 +537,7 @@ src/
   selector/   генерация селектора, эвристики хэшей, санитизация и описание элемента
   ui/         shadow-root: плашка с кнопками, меню и список комментариев, подсветка, поповер (форма и тред), поле ввода с записью, тост, стили, тексты
   adapters/   http, console/localStorage
+  auth/       серверный вход посетителей: Google, Яндекс ID, Keycloak (PKCE, профиль, роль владельца)
   tracker/    общее для всех трекеров: ошибки, текст issue и ответа, слияние комментариев, один статус, видимость
   github/     серверная интеграция GitHub: клиент (повторы, ошибки), вход через GitHub App, репозитории и проекты, синхронизация
   gitlab/     серверная интеграция GitLab: клиент (ошибки, TLS), OAuth, проверка адреса, проекты, issues, загрузки, notes
@@ -503,11 +547,12 @@ src/
   settings-iife.ts  <script>-бандл страницы настроек
   types.ts
 demo/         страница с разными элементами, script-tag пример, мок-сервер, settings.html, tracker-sync.mjs (общий движок синхронизации),
-              github.mjs / gitlab.mjs (бэкенды), github-mock.mjs / gitlab-mock.mjs (тестовые GitHub и GitLab)
+              github.mjs / gitlab.mjs (бэкенды), github-mock.mjs / gitlab-mock.mjs (тестовые GitHub и GitLab),
+              auth.mjs (вход посетителей), auth-mock.mjs (тестовые Google, Яндекс, Keycloak)
 tests/unit    Vitest
 tests/e2e     Playwright
 ```
 
 ## Дальше (вне MVP)
 
-Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграция с YouTrack (на общем слое трекеров), мобильные жесты, iframe. GitHub и GitLab: вебхуки вместо опроса; GitHub: колонка GitHub Project на карточке; GitLab: бот (group/project access token), метки и исполнители.
+Скриншоты, упоминания @имя, редактирование самого комментария, интеграция с YouTrack (на общем слое трекеров), мобильные жесты, iframe. GitHub и GitLab: вебхуки вместо опроса; GitHub: колонка GitHub Project на карточке; GitLab: бот (group/project access token), метки и исполнители.

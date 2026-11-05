@@ -115,9 +115,11 @@ export function createSyncEngine({ driver, db, save, persistComments, findCommen
   async function filesFromDisk(item) {
     const out = [];
     for (const a of item.attachments ?? []) {
-      if (!a.url?.startsWith('/uploads/')) continue;
+      // only a file the feedback route wrote itself: /uploads/<id>.<ext>, never a path out of the folder
+      const m = /^\/uploads\/([A-Za-z0-9-]{1,64}\.[a-z0-9]{1,5})$/.exec(a.url ?? '');
+      if (!m) continue;
       try {
-        out.push({ attachment: a, data: new Uint8Array(await readFile(join(uploadsDir, a.url.slice('/uploads/'.length)))) });
+        out.push({ attachment: a, data: new Uint8Array(await readFile(join(uploadsDir, m[1]))) });
       } catch {
         /* file gone: the issue lists it as "not uploaded" */
       }

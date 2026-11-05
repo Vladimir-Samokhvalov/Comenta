@@ -91,4 +91,9 @@ export const DEFAULT_LABELS: FeedbackLabels = {
     return `${name ? `${name} закрыл(а)` : 'Закрыт'} на ${DEFAULT_LABELS.providerName(provider)}${r}`;
   },
   fromTracker: (provider) => `из ${DEFAULT_LABELS.providerName(provider)}`,
+  signInTitle: 'Войдите, чтобы комментировать',
+  signInWith: (provider) => `Войти через ${provider}`,
+  signInFailed: 'Не удалось войти. Попробуйте ещё раз.',
+  signInPopupBlocked: 'Браузер заблокировал окно входа. Разрешите всплывающие окна или нажмите ещё раз.',
+  signOut: 'Выйти',
 };

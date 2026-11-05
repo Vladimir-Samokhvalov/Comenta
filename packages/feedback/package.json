@@ -36,6 +36,11 @@
       "import": "./dist/tracker.js",
       "require": "./dist/tracker.cjs"
     },
+    "./auth": {
+      "types": "./dist/types/auth/index.d.ts",
+      "import": "./dist/auth.js",
+      "require": "./dist/auth.cjs"
+    },
     "./settings": {
       "types": "./dist/types/settings/index.d.ts",
       "import": "./dist/settings.js",

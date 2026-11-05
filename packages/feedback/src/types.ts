@@ -279,6 +279,24 @@ export interface FeedbackLabels {
   closedOnTracker: (provider: string, name: string | undefined, reason: string | null) => string;
   /** Mark on replies written on the tracker: `из GitHub`, `из GitLab`. */
   fromTracker: (provider: string) => string;
+  /** Sign-in card (with the `auth` option). */
+  signInTitle: string;
+  signInWith: (provider: string) => string;
+  signInFailed: string;
+  signInPopupBlocked: string;
+  signOut: string;
+}
+
+/**
+ * Visitors sign in through your server before they can comment (Google, Yandex, Keycloak…).
+ * The widget reads `GET {endpoint}/me` → `{ user, providers }`, opens `{endpoint}/login/<provider>` in a popup
+ * and signs out with `POST {endpoint}/logout`. See demo/auth.mjs and `@comenta/feedback/auth`.
+ */
+export interface FeedbackAuthOptions {
+  /** Base URL of the sign-in routes on this site, e.g. `/api/auth`. Same origin as the page. */
+  endpoint: string;
+  /** Open the provider in a popup (default true); false navigates the page. */
+  popup?: boolean;
 }
 
 export interface FeedbackOptions {
@@ -287,6 +305,11 @@ export interface FeedbackOptions {
   /** Toggle button position. Default `bottom-right`. */
   position?: FeedbackPosition;
   author?: FeedbackAuthor;
+  /**
+   * Require sign-in: the author (and the owner role) then comes from your server's session, the widget asks
+   * visitors who are not signed in to sign in, and `author` is ignored.
+   */
+  auth?: FeedbackAuthOptions;
   /** When false the widget renders nothing. Default true. */
   enabled?: boolean;
   /**
@@ -337,6 +360,8 @@ export interface FeedbackInstance {
   openThread(id: string): boolean;
   /** Number of threads with replies the current user has not seen. */
   getUnreadCount(): number;
+  /** With the `auth` option: re-read who is signed in (call after your site signed the visitor in or out). Resolves true when signed in. */
+  refreshSignIn(): Promise<boolean>;
   /** Remove all DOM and listeners. */
   destroy(): void;
 }
