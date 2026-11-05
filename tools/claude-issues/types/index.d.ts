@@ -7,8 +7,10 @@ export type IssuesRepo = {
   host: string
   /** owner/repo, or group/subgroup/project */
   path: string
-  /** The CLI executable found (`gh`, `/opt/homebrew/bin/glab`, ...). */
-  bin: string
+  /** How the API is reached: the gh/glab CLI, or the login git keeps for the host. */
+  via: 'cli' | 'git'
+  /** The CLI executable found (`gh`, `/opt/homebrew/bin/glab`, ...), with `via: 'cli'`. */
+  bin?: string
   webUrl: string
 }
 export type Repo = IssuesRepo

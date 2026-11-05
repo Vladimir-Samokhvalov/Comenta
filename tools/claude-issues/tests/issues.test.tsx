@@ -85,7 +85,7 @@ test('a host neither CLI is signed in to says what to run', async () => {
     argv[1] === '--version'
       ? { exitCode: 0, stdout: '', stderr: '' }
       : { exitCode: 1, stdout: '', stderr: 'not logged in' }
-  await expect(connect(run, { host: 'git.corp', path: 'team/app' })).rejects.toThrow(/glab auth login/)
+  await expect(connect({ run, fetch: async () => ({ status: 404, ok: false, text: '' }) }, { host: 'git.corp', path: 'team/app' })).rejects.toThrow(/glab auth login/)
 })
 
 test('a missing login on a known host is told by the API answer', async ($, on) => {
@@ -202,5 +202,70 @@ test('a folder that is not a repository says so', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Text', text: /не git-репозиторий/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('without gh the login git keeps is used, straight to the API', async ($, on) => {
+  const requests: { url: string; method: string; auth: string; body?: string }[] = []
+  let credentialInput = ''
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'git' && argv[1] === 'remote') return ok('origin\thttps://github.com/acme/site.git (fetch)\n')
+    if (argv[0] === 'git' && argv[1] === 'credential') {
+      credentialInput = e.init?.stdin ?? ''
+      expect(e.init?.env?.GIT_TERMINAL_PROMPT).toBe('0')
+      return ok('protocol=https\nhost=github.com\nusername=vlad\npassword=gho_secret\n')
+    }
+    throw new Error('not found')
+  })
+  on('http.fetch', (_, e) => {
+    const method = e.init?.method ?? 'GET'
+    requests.push({ url: e.url, method, auth: e.init?.headers?.Authorization ?? '', body: e.init?.body })
+    const answer = (status: number, body: unknown) => ({
+      value: { status, ok: status < 300, headers: {}, text: JSON.stringify(body) },
+    })
+    if (e.url.startsWith('https://api.github.com/repos/acme/site/issues?')) return answer(200, GH_ISSUES)
+    if (e.url === 'https://api.github.com/repos/acme/site/issues/7/comments?per_page=100') return answer(200, [])
+    if (e.url === 'https://api.github.com/repos/acme/site/issues/7' && method === 'PATCH') return answer(200, {})
+    return answer(404, { message: 'Not Found' })
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  const written: string[] = []
+  on('state.set', (_, e, next) => {
+    written.push(JSON.stringify(e))
+    return next(e)
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(credentialInput).toBe('protocol=https\nhost=github.com\n\n')
+  expect(await ui.find({ type: 'Text', text: /открытых 1 из 2/ })).toBeDefined()
+  expect(requests[0]?.auth).toBe('Bearer gho_secret')
+
+  await ui.press({ key: 'issue-7' })
+  expect(await ui.find({ type: 'Text', text: /Комментарии \(0\)/ })).toBeDefined()
+  await ui.press({ key: 'close' })
+  await ui.press({ key: 'close-yes' })
+  const patch = requests.find(r => r.method === 'PATCH')
+  expect(JSON.parse(patch?.body ?? '{}')).toEqual({ state: 'closed', state_reason: 'completed' })
+  expect(await ui.find({ key: 'close' })).toBeUndefined()
+
+  // The token never lands in the panel's state.
+  expect(written.length).toBeGreaterThan(0)
+  expect(written.join('')).not.toContain('gho_secret')
+  await ui.unmount()
+})
+
+test('without gh and without a git login, the panel says what to do', async ($, on) => {
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'git' && e.argv[1] === 'remote') return ok('origin\thttps://github.com/acme/site.git (fetch)\n')
+    if (e.argv[0] === 'git') return fail('fatal: could not read Username: terminal prompts disabled')
+    throw new Error('not found')
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /не найден gh, и git не хранит пароль/ })).toBeDefined()
   await ui.unmount()
 })

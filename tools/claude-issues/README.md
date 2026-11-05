@@ -2,8 +2,9 @@
 
 Мод для Claude Code. Он показывает в боковой панели issues репозитория, который открыт в сессии.
 По `git remote` (`origin`, иначе `upstream`, иначе первый) мод понимает, GitHub это или GitLab
-(включая self-hosted), и ходит в API через ваш `gh` или `glab`. Токен не хранится и не
-настраивается: используется вход, который уже выполнен в CLI.
+(включая self-hosted), и ходит в API через ваш `gh` или `glab`. Если их нет, мод берёт вход,
+который git хранит для `https://<host>` (связка ключей macOS, Git Credential Manager), то есть тот же,
+что использует `git push` по https. Ничего настраивать не нужно, токен мод нигде не сохраняет.
 
 Что умеет:
 
@@ -16,9 +17,16 @@
 
 ## Что нужно
 
+Подходит любой из вариантов:
+
 - `gh` с выполненным входом (`gh auth login`) для GitHub или `glab` (`glab auth login --hostname <host>`) для GitLab.
-  Мод ищет их в `PATH`, а также в `/opt/homebrew/bin`, `/usr/local/bin` и `/usr/bin`.
-- Если хост не github.com и в его имени нет «gitlab», мод выбирает тот CLI, который вошёл в этот хост.
+  Мод ищет их в `PATH`, а также в `/opt/homebrew/bin`, `/usr/local/bin` и `/usr/bin`;
+- либо репозиторий клонирован по https, и git помнит вход: `git pull` проходит без запроса пароля.
+  В хранилище должен лежать токен (так делают GitHub Desktop, Git Credential Manager и
+  `gh auth setup-git`), а не пароль от аккаунта.
+
+Если хост не github.com и в его имени нет «gitlab», мод выбирает тот CLI, который вошёл в этот хост,
+или спрашивает API хоста, GitLab это или GitHub Enterprise.
 
 ## Установка
 

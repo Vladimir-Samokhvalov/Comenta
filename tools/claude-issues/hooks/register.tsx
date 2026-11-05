@@ -12,7 +12,7 @@ import {
   listIssues,
   parseRemote,
   pickRemote,
-  type Run,
+  type Io,
 } from './tracker'
 
 const PANE = 'issues'
@@ -22,7 +22,7 @@ const REFRESH_MS = 5 * 60 * 1000
 // Change a tag when that value's fields change: what an earlier version
 // stored outlives a reload, and a new tag reads it as the initial value.
 const list = atom({ plugin: 'issues-panel', key: 'list' } as const, { status: 'idle', issues: [] } as IssuesList, {
-  shape: 'list-1',
+  shape: 'list-2',
 })
 const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as IssuesDetail | null, {
   shape: 'detail-1',
@@ -32,10 +32,10 @@ const setList = ($: EngineInterface, fn: (old: IssuesList) => IssuesList) => upd
 const setDetail = ($: EngineInterface, fn: (old: IssuesDetail | null) => IssuesDetail | null) =>
   update($, detail, fn)
 
-const runner =
-  ($: EngineInterface, cwd: string): Run =>
-  argv =>
-    $.process.run(argv, { cwd, timeoutMs: 60_000 })
+const runner = ($: EngineInterface, cwd: string): Io => ({
+  run: (argv, init) => $.process.run(argv, { cwd, timeoutMs: 60_000, ...init }),
+  fetch: (url, init) => $.http.fetch(url, init),
+})
 
 const message = (err: unknown) => (err instanceof TrackerError ? err.message : String(err))
 
@@ -54,7 +54,8 @@ async function load($: EngineInterface): Promise<void> {
   }))
   if (!sameFolder) await setDetail($, () => null)
 
-  const run = runner($, cwd)
+  const io = runner($, cwd)
+  const run = io.run
   try {
     let remotes
     try {
@@ -67,8 +68,8 @@ async function load($: EngineInterface): Promise<void> {
     if (!url) throw new TrackerError('У репозитория нет remote')
     const remote = parseRemote(url)
     if (!remote) throw new TrackerError(`Не понял адрес remote: ${url}`)
-    const repo = await connect(run, remote)
-    const issues = await listIssues(run, repo)
+    const repo = await connect(io, remote)
+    const issues = await listIssues(io, repo)
     await setList($, old =>
       old.cwd === cwd ? { status: 'ready', cwd, repo, issues, loadedAt: Date.now() } : old,
     )
