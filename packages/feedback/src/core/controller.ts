@@ -278,7 +278,7 @@ export class Controller {
       this.popover!.close();
       this.openComment(viewing);
     }
-    // the server may show this person more (or less): e.g. GitHub comments are for the owner only
+    // the server may show this person more (or less): e.g. GitHub comments are for the owner and the comment's author
     void this.poll();
   }
 
@@ -599,10 +599,10 @@ export class Controller {
 
   /**
    * The comment as this viewer may see it: GitHub state and replies written on GitHub are for
-   * the site owner only. The server must strip them for everyone else; this is a second line.
+   * the site owner and the comment's author. The server must strip them for everyone else; this is a second line.
    */
   private visible(p: FeedbackPayload, me = this.me()): FeedbackPayload {
-    if (me.role === 'owner') return p;
+    if (me.role === 'owner' || sameAuthor(p.author, me)) return p;
     const hasState = !!p.issue && (p.issue.state !== undefined || p.issue.unavailable !== undefined);
     if (!hasState && !p.replies?.some((r) => r.origin)) return p;
     const out = { ...p };

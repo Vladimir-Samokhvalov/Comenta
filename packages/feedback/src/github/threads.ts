@@ -338,12 +338,21 @@ export function mergeIssueComments(payload: Pick<FeedbackPayload, 'id' | 'replie
   return { replies: out, changed, linked };
 }
 
+/** Who is looking at the list: the site owner, or a visitor with their author id (site user or guest). */
+export interface Viewer {
+  owner?: boolean;
+  /** `author.id` of the person, as the widget sends it in comments and replies. */
+  id?: string;
+}
+
 /**
- * What a visitor may see. GitHub discussions can be internal, so only the site owner gets
- * the issue state and the replies written on GitHub. Call it on your server for every list answer.
+ * What a viewer may see. GitHub discussions can be internal, so only the site owner and the
+ * comment's own author get the issue state and the replies written on GitHub.
+ * Call it on your server for every list answer. `true` / `false` is shorthand for owner / nobody.
  */
-export function forViewer<T extends FeedbackPayload>(payload: T, isOwner: boolean): T {
-  if (isOwner) return payload;
+export function forViewer<T extends FeedbackPayload>(payload: T, viewer: Viewer | boolean): T {
+  const v: Viewer = typeof viewer === 'boolean' ? { owner: viewer } : viewer;
+  if (v.owner || (!!v.id && payload.author?.id === v.id)) return payload;
   const out = { ...payload };
   if (out.issue) {
     const { state: _s, stateReason: _r, closedAt: _c, unavailable: _u, ...link } = out.issue;

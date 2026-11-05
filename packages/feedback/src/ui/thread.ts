@@ -248,7 +248,7 @@ export class Thread {
     if (p.issue && /^https?:\/\//.test(p.issue.url)) {
       const i = p.issue;
       headKids.push(h(d, 'a', { class: 'ph-issue', href: i.url, target: '_blank', rel: 'noopener noreferrer', title: `${i.repo}#${i.number}` }, [L.issueLink(i)]));
-      // GitHub state (the server sends it to the owner only)
+      // GitHub state (the server sends it to the owner and the comment's author only)
       const state = i.unavailable ? 'unavailable' : i.state ?? null;
       if (state) {
         const title = state === 'unavailable' ? `${i.repo}#${i.number}` : `GitHub: ${L.issueStateLong(i)}`;

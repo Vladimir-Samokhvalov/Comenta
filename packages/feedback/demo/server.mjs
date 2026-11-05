@@ -10,7 +10,7 @@
 //   multipart POST (payload + recordings) → files saved to demo/uploads/, answers { attachments: { id: url } }
 //   /api/github/*                               → GitHub integration (demo/github.mjs, used by <comenta-settings>)
 //   GITHUB_MOCK=1                               → fake GitHub at /__github (demo/github-mock.mjs), no account needed
-//   Replies are mirrored to the linked issue; GitHub state and comments come back for the owner only.
+//   Replies are mirrored to the linked issue; GitHub state and comments come back for the owner and the comment's author.
 // The demo does not check permissions (who may resolve, edit, delete): a real backend must.
 // Header X-Comenta-Space (or cookie comenta_space) keeps separate stores (the e2e tests use one per test).
 import { createServer } from 'node:http';
@@ -67,11 +67,13 @@ const github = createGitHubIntegration({
   listComments: (space) => store.get(space) ?? [],
 });
 /**
- * GitHub state and comments written on GitHub are shown to the site owner only. Here the owner is
- * whoever has the GitHub settings session, or (demo only, the page has a user switcher and no login)
- * a request with `X-Comenta-Role: owner`. A real backend takes it from its own authentication.
+ * GitHub state and comments written on GitHub are shown to the site owner and to the comment's author.
+ * Here the owner is whoever has the GitHub settings session, or (demo only, the page has a user switcher
+ * and no login) a request with `X-Comenta-Role: owner`; the viewer's author id comes from `X-Comenta-User`.
+ * A real backend takes both from its own authentication.
  */
 const isOwner = (req) => github.isOwner(req, spaceOf(req)) || req.headers['x-comenta-role'] === 'owner';
+const viewerOf = (req) => ({ owner: isOwner(req), id: typeof req.headers['x-comenta-user'] === 'string' ? req.headers['x-comenta-user'].slice(0, 200) : undefined });
 const listOf = (req) => {
   const k = spaceOf(req);
   if (!store.has(k)) store.set(k, []);
@@ -175,10 +177,11 @@ const server = createServer(async (req, res) => {
         const page = url.searchParams.get('url');
         const list = listOf(req);
         const items = page ? list.filter((c) => sameUrl(c.page?.url, page)) : list;
-        const owner = isOwner(req);
-        // the owner opened the widget / it polled: pull fresh issue state and comments (throttled)
-        if (owner) await github.refreshComments(spaceOf(req), items);
-        json(res, 200, github.forViewer(items, owner));
+        const viewer = viewerOf(req);
+        // the owner or an author opened the widget / it polled: pull fresh issue state and comments (throttled)
+        const theirs = viewer.owner ? items : items.filter((c) => viewer.id && c.author?.id === viewer.id);
+        if (theirs.length) await github.refreshComments(spaceOf(req), theirs);
+        json(res, 200, github.forViewer(items, viewer));
         return;
       }
       res.writeHead(405).end();

@@ -25,7 +25,8 @@
 // Thread sync (see "thread sync" below): issue state and comments written on GitHub are polled
 // (COMENTA_GITHUB_POLL_MS, default 45 s, plus a per-issue refresh when the owner opens the widget,
 // throttled by COMENTA_GITHUB_REFRESH_MS) with ETags, and replies written in Comenta are posted to the
-// issue as comments signed with the author's name. Only the site owner is shown GitHub state and comments.
+// issue as comments signed with the author's name. GitHub state and comments are shown to the site owner and
+// to the author of each comment only.
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -829,8 +830,8 @@ export function createGitHubIntegration({ root, persistComments, findComment, li
     refreshComments,
     /** The request comes from the signed-in site owner (GitHub session of this space). */
     isOwner: (req, space) => !!session(req, space),
-    /** Strip GitHub state and comments for everyone but the owner. */
-    forViewer: (list, isOwner) => list.map((c) => forViewer(c, isOwner)),
+    /** Strip GitHub state and comments for everyone but the owner and each comment's author. */
+    forViewer: (list, viewer) => list.map((c) => forViewer(c, viewer)),
     status: (space) => db.spaces[space],
     close: () => (clearInterval(timer), clearInterval(pollTimer)),
   };

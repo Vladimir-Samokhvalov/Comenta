@@ -34,4 +34,4 @@ export {
   mergeIssueComments,
   forViewer,
 } from './threads';
-export type { GitHubIssueComment, GitHubIssueState, RepoCursor, IssueFetch, CommentsFetch, RepoActivity, PostReplyOptions, MergeResult } from './threads';
+export type { GitHubIssueComment, GitHubIssueState, RepoCursor, Viewer, IssueFetch, CommentsFetch, RepoActivity, PostReplyOptions, MergeResult } from './threads';

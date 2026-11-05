@@ -512,7 +512,7 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await expect.poll(async () => (await comments(page)).length).toBe(0);
   });
 
-  test('visitors see neither the GitHub state nor GitHub comments; the owner does', async ({ page, browser }) => {
+  test('other visitors see neither the GitHub state nor GitHub comments; the owner does', async ({ page, browser }) => {
     await openSyncedThread(page);
     await act(page, { repo: 'acme-studio/web-app', number: 1, comment: 'Внутреннее обсуждение', login: 'octo-dev' });
     await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'completed' });
@@ -541,6 +541,39 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await widget(page).userSelect.selectOption('anna');
     await expect(github(page)).toHaveCount(0);
     await expect(state(page)).toHaveCount(0);
+  });
+
+  test("the comment's author sees the GitHub state and comments of their own comment", async ({ page, browser }) => {
+    await configure(page);
+    const visitor = async (user: string) => {
+      const ctx = await browser.newContext();
+      const p = await ctx.newPage();
+      await p.addInitScript(([sp, u]) => {
+        (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
+        localStorage.setItem('comenta-demo-user', u);
+      }, [space, user] as const);
+      return { ctx, p };
+    };
+    // Anna (not the owner, no GitHub session) leaves a comment that becomes issue #1
+    const anna = await visitor('anna');
+    const res = await leaveComment(anna.p, 'Не вижу кнопку оплаты', '/?poll=400');
+    expect(res.issue?.number).toBe(1);
+    await act(page, { repo: 'acme-studio/web-app', number: 1, comment: 'Уточните браузер, пожалуйста', login: 'octo-dev' });
+    await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'completed' });
+    await widget(anna.p).pins.first().click();
+    await expect(state(anna.p)).toHaveText('закрыт');
+    await expect(github(anna.p).locator('.ph-msg-text')).toHaveText('Уточните браузер, пожалуйста');
+
+    // a guest looking at the same page does not get them
+    const guest = await visitor('guest');
+    const listed = guest.p.waitForResponse((r) => r.url().includes('/api/feedback') && r.request().method() === 'GET');
+    await guest.p.goto('/?poll=400');
+    expect(JSON.stringify(await (await listed).json())).not.toContain('Уточните браузер');
+    await widget(guest.p).pins.first().click();
+    await expect(guest.p.locator('comenta-feedback .ph-issue-state')).toHaveCount(0);
+    await expect(guest.p.locator('comenta-feedback .ph-msg-github')).toHaveCount(0);
+    await anna.ctx.close();
+    await guest.ctx.close();
   });
 
   test('deleted issue: the card says "Issue недоступен" and keeps the link', async ({ page }) => {

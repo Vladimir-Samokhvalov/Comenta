@@ -59,7 +59,7 @@ export interface FeedbackIssueLink {
   projectId?: string;
   /**
    * Issue state on the tracker, kept up to date by the backend's sync. Absent: not synced yet.
-   * Backends should send it (and replies with `origin`) only to the site owner.
+   * Backends should send it (and replies with `origin`) only to the site owner and the comment's author (see `forViewer`).
    */
   state?: 'open' | 'closed';
   /** Why it was closed: GitHub's `state_reason` (`completed`, `not_planned`, `duplicate`…). */

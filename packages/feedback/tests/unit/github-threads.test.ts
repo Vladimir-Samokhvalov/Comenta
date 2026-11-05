@@ -233,7 +233,7 @@ describe('merging GitHub comments into a thread', () => {
 });
 
 describe('visibility', () => {
-  it('only the owner sees GitHub state and GitHub comments', () => {
+  it('a visitor sees neither GitHub state nor GitHub comments; the owner does', () => {
     const p = {
       id: 'c1',
       issue: { ...issue, state: 'closed', stateReason: 'completed' },
@@ -244,5 +244,19 @@ describe('visibility', () => {
     expect(guest.issue).toEqual(issue);
     expect(guest.replies?.map((r) => r.id)).toEqual(['r1']);
     expect(p.replies).toHaveLength(2); // the stored comment is untouched
+  });
+
+  it("the comment's author sees them too; other visitors don't", () => {
+    const p = {
+      id: 'c1',
+      author: { id: 'anna', name: 'Анна' },
+      issue: { ...issue, state: 'open' },
+      replies: [{ ...reply({ id: 'github-1' }), origin: 'github' }],
+    } as unknown as FeedbackPayload;
+    expect(forViewer(p, { id: 'anna' })).toBe(p);
+    expect(forViewer(p, { owner: true })).toBe(p);
+    expect(forViewer(p, { id: 'boris' }).replies).toEqual([]);
+    expect(forViewer(p, {}).issue).toEqual(issue);
+    expect(forViewer({ ...p, author: undefined }, { id: 'anna' }).replies).toEqual([]); // no author id: nobody matches
   });
 });
