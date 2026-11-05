@@ -2,8 +2,10 @@
 // <comenta-settings> and the GitHub sync expect. Plain Node, no dependencies besides dist/github.js.
 //
 // Env:
-//   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET   OAuth App (https://github.com/settings/developers);
-//                                             callback URL: {PUBLIC_URL}/api/github/auth/callback
+//   GITHUB_APP_SLUG / GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
+//                                             GitHub App; callback URL: {PUBLIC_URL}/api/github/auth/callback.
+//                                             Without them: GITHUB_APP_FILE (default demo/github-app.json),
+//                                             written by `pnpm github-app:setup`
 //   PUBLIC_URL                                 site origin for the callback (default: from the Host header)
 //   COMENTA_GITHUB_PAT=0|1                     accept a personal access token (default 1 unless NODE_ENV=production)
 //   COMENTA_GITHUB_OWNERS=login1,login2        who may connect (default: the first one to connect owns it)
@@ -11,7 +13,8 @@
 //   GITHUB_STORE                               where tokens and settings are kept (default demo/github.json, mode 600)
 //
 // Model: one site owner connects GitHub per space (site). The token stays here; the browser only
-// gets an HttpOnly session cookie. Guests' comments become issues under the owner's token.
+// gets an HttpOnly session cookie. Guests' comments become issues under the owner's user token, which
+// reaches only the repositories chosen when the app was installed and is refreshed when it expires.
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -21,13 +24,16 @@ import {
   GitHubError,
   authorizeUrl,
   checkRepo,
+  countInstallations,
   exchangeCode,
   getAccount,
+  installUrl,
+  listInstallationRepos,
   listProjects,
   listRepos,
+  refreshAccessToken,
   revokeGrant,
   syncComment,
-  DEFAULT_SCOPES,
 } from '../dist/github.js';
 
 const SESSION_COOKIE = 'comenta_sid';
@@ -38,9 +44,16 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
   const env = process.env;
   const apiUrl = env.GITHUB_API_URL ?? 'https://api.github.com';
   const webUrl = env.GITHUB_WEB_URL ?? 'https://github.com';
-  const clientId = env.GITHUB_CLIENT_ID ?? '';
-  const clientSecret = env.GITHUB_CLIENT_SECRET ?? '';
-  const oauth = !!(clientId && clientSecret);
+  let appFile = {};
+  try {
+    appFile = JSON.parse(readFileSync(env.GITHUB_APP_FILE ?? join(root, 'demo', 'github-app.json'), 'utf8'));
+  } catch {
+    /* no app registered yet */
+  }
+  const clientId = env.GITHUB_CLIENT_ID ?? appFile.clientId ?? '';
+  const clientSecret = env.GITHUB_CLIENT_SECRET ?? appFile.clientSecret ?? '';
+  const appSlug = env.GITHUB_APP_SLUG ?? appFile.slug ?? '';
+  const oauth = !!(clientId && clientSecret && appSlug);
   const patAllowed = env.COMENTA_GITHUB_PAT ? env.COMENTA_GITHUB_PAT !== '0' : env.NODE_ENV !== 'production';
   const owners = (env.COMENTA_GITHUB_OWNERS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   const storeFile = env.GITHUB_STORE ?? join(root, 'demo', 'github.json');
@@ -62,7 +75,24 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
   const oauthStates = new Map(); // state → { space, back, at }
   const repoCache = new Map(); // space → { at, items }
   const inflight = new Map(); // `${space}:${id}` → Promise
-  const client = (integ) => new GitHubClient({ token: integ.token, apiUrl, retries: 3, retryDelayMs: Number(env.COMENTA_GITHUB_RETRY_MS ?? 500) });
+  const refreshing = new WeakMap(); // integ → Promise: refresh tokens are single-use, so one refresh at a time
+
+  /** The owner's token, refreshed a minute before it expires. A dead refresh token throws `unauthorized`. */
+  const accessToken = (integ) => {
+    if (!integ.refreshToken || Date.now() < integ.tokenExpiresAt - 60_000) return integ.token;
+    if (!refreshing.has(integ)) {
+      const run = refreshAccessToken({ clientId, clientSecret, refreshToken: integ.refreshToken, webUrl })
+        .then((t) => {
+          Object.assign(integ, { token: t.token, refreshToken: t.refreshToken, tokenExpiresAt: t.expiresAt });
+          save();
+          return t.token;
+        })
+        .finally(() => refreshing.delete(integ));
+      refreshing.set(integ, run);
+    }
+    return refreshing.get(integ);
+  };
+  const client = (integ) => new GitHubClient({ token: () => accessToken(integ), apiUrl, retries: 3, retryDelayMs: Number(env.COMENTA_GITHUB_RETRY_MS ?? 500) });
 
   // ------------------------------------------------------------------ helpers
 
@@ -116,7 +146,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     for (const [sid, s] of Object.entries(db.sessions)) if (s.space === space) delete db.sessions[sid];
   };
   const missingScopes = (integ) => {
-    if (integ.tokenType === 'pat' && !integ.scopes?.length) return []; // fine-grained tokens have no scopes
+    if (!integ.scopes?.length) return []; // GitHub App and fine-grained tokens have no scopes
     const have = new Set(integ.scopes ?? []);
     return Object.values(REQUIRED).filter((s) => !have.has(s));
   };
@@ -136,6 +166,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     return {
       ...base,
       connected: true,
+      app: integ.tokenType === 'app',
       account: integ.account,
       config: integ.config ?? null,
       missingScopes: missingScopes(integ),
@@ -149,7 +180,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     try {
       const acc = await getAccount(client(integ));
       integ.account = { login: acc.login, name: acc.name, avatarUrl: acc.avatarUrl, htmlUrl: acc.htmlUrl };
-      if (acc.scopes.length || integ.tokenType === 'oauth') integ.scopes = acc.scopes;
+      if (acc.scopes.length) integ.scopes = acc.scopes;
       integ.checkedAt = Date.now();
     } catch (err) {
       if (err instanceof GitHubError && err.code === 'unauthorized') markExpired(integ);
@@ -162,10 +193,9 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     save();
   }
 
-  /** Store a fresh token for the space (OAuth callback or PAT). */
-  async function connect(space, token, tokenType, scopesFromExchange) {
-    const integ0 = { token, tokenType };
-    const acc = await getAccount(client(integ0));
+  /** Store a fresh token for the space (GitHub App callback or PAT). */
+  async function connect(space, { token, refreshToken, expiresAt }, tokenType) {
+    const acc = await getAccount(client({ token, tokenType }));
     const login = acc.login.toLowerCase();
     if (owners.length && !owners.includes(login)) throw new GitHubError('forbidden', `Аккаунт @${acc.login} не может настраивать интеграцию на этом сайте.`);
     const prev = db.spaces[space];
@@ -175,8 +205,10 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     const sameOwner = prev?.account?.login?.toLowerCase() === login;
     db.spaces[space] = {
       token,
+      refreshToken,
+      tokenExpiresAt: expiresAt,
       tokenType,
-      scopes: scopesFromExchange?.length ? scopesFromExchange : acc.scopes,
+      scopes: acc.scopes,
       account: { login: acc.login, name: acc.name, avatarUrl: acc.avatarUrl, htmlUrl: acc.htmlUrl },
       checkedAt: Date.now(),
       // the same person signing in again keeps the chosen repository and queued comments
@@ -294,6 +326,12 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
 
   // ------------------------------------------------------------------ routes
 
+  function redirectToInstall(res, space, back, ...setCookies) {
+    const state = randomBytes(16).toString('base64url');
+    oauthStates.set(state, { space, back, at: Date.now() });
+    res.writeHead(302, { Location: installUrl({ slug: appSlug, state, webUrl }), 'Set-Cookie': [cookie(STATE_COOKIE, state, { maxAge: 600 }), ...setCookies] }).end();
+  }
+
   /** Handles /api/github/*. Returns true when the request was handled. */
   async function handle(req, res, url, space) {
     const path = url.pathname.slice('/api/github'.length) || '/';
@@ -312,8 +350,15 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         const state = randomBytes(16).toString('base64url');
         oauthStates.set(state, { space, back, at: Date.now() });
         for (const [k, v] of oauthStates) if (Date.now() - v.at > 600_000) oauthStates.delete(k);
-        const location = authorizeUrl({ clientId, redirectUri: `${origin(req)}/api/github/auth/callback`, state, scopes: DEFAULT_SCOPES, webUrl });
+        const location = authorizeUrl({ clientId, redirectUri: `${origin(req)}/api/github/auth/callback`, state, webUrl });
         return void res.writeHead(302, { Location: location, 'Set-Cookie': cookie(STATE_COOKIE, state, { maxAge: 600 }) }).end();
+      }
+
+      if (path === '/auth/install' && req.method === 'GET') {
+        const back = safeBack(url.searchParams.get('return'));
+        if (!oauth) return void res.writeHead(302, { Location: withParam(back, 'comenta_error', 'Вход через GitHub не настроен на сервере.') }).end();
+        repoCache.delete(space);
+        return void redirectToInstall(res, space, back);
       }
 
       if (path === '/auth/callback' && req.method === 'GET') {
@@ -324,13 +369,17 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         const clear = cookie(STATE_COOKIE, '', { maxAge: 0 });
         const bail = (msg) => res.writeHead(302, { Location: withParam(back, 'comenta_error', msg), 'Set-Cookie': clear }).end();
         if (!saved || cookies(req)[STATE_COOKIE] !== state) return void bail('Вход не удался: ссылка устарела. Попробуйте ещё раз.');
+        if (url.searchParams.get('setup_action') === 'request') return void bail('Установка приложения ждёт одобрения владельца организации на GitHub.');
         if (url.searchParams.get('error')) return void bail(url.searchParams.get('error') === 'access_denied' ? 'Вход отменён на GitHub.' : `GitHub: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}`);
         try {
-          const { token, scopes } = await exchangeCode({ clientId, clientSecret, code: url.searchParams.get('code') ?? '', redirectUri: `${origin(req)}/api/github/auth/callback`, webUrl, apiUrl });
-          const login = await connect(saved.space, token, 'oauth', scopes);
+          const tokens = await exchangeCode({ clientId, clientSecret, code: url.searchParams.get('code') ?? '', redirectUri: `${origin(req)}/api/github/auth/callback`, webUrl, apiUrl });
+          const login = await connect(saved.space, tokens, 'app');
           const sid = newSession(saved.space, login);
           save();
-          return void res.writeHead(302, { Location: back, 'Set-Cookie': [clear, cookie(SESSION_COOKIE, sid, { maxAge: 30 * 86400 })] }).end();
+          const sessionCookie = cookie(SESSION_COOKIE, sid, { maxAge: 30 * 86400 });
+          // signed in, but the app isn't installed anywhere yet: go straight on to choosing repositories
+          if ((await countInstallations(client(db.spaces[saved.space]))) === 0) return void redirectToInstall(res, saved.space, back, sessionCookie);
+          return void res.writeHead(302, { Location: back, 'Set-Cookie': [clear, sessionCookie] }).end();
         } catch (err) {
           return void bail(err instanceof GitHubError ? err.message : 'Вход через GitHub не удался.');
         }
@@ -342,7 +391,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         if (typeof token !== 'string' || token.trim().length < 20) return void json(res, 422, { error: { code: 'validation', message: 'Это не похоже на токен GitHub.' } });
         let login;
         try {
-          login = await connect(space, token.trim(), 'pat');
+          login = await connect(space, { token: token.trim() }, 'pat');
         } catch (err) {
           if (err instanceof GitHubError && err.code === 'unauthorized') return void json(res, 401, { error: { code: 'invalid_token', message: 'GitHub не принял токен: он неверный, истёк или отозван.' } });
           throw err;
@@ -359,9 +408,11 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
       const integ = s.integ;
 
       if (path === '/auth/logout' && req.method === 'POST') {
-        if (integ.tokenType === 'oauth' && oauth && integ.token) await revokeGrant({ clientId, clientSecret, token: integ.token, apiUrl });
+        if (integ.tokenType === 'app' && oauth && integ.token) await revokeGrant({ clientId, clientSecret, token: integ.token, apiUrl });
         log(`[github] @${integ.account?.login} вышел: токен удалён`);
         delete integ.token;
+        delete integ.refreshToken;
+        delete integ.tokenExpiresAt;
         delete integ.expired;
         integ.disconnected = true; // comments stop going to GitHub until someone connects again
         delete integ.lastError;
@@ -384,7 +435,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
 
       if (path === '/repos' && req.method === 'GET') {
         const cached = repoCache.get(space);
-        const items = cached && Date.now() - cached.at < 60_000 ? cached.items : await guard(() => listRepos(gh));
+        const items = cached && Date.now() - cached.at < 60_000 ? cached.items : await guard(() => (integ.tokenType === 'app' ? listInstallationRepos(gh) : listRepos(gh)));
         if (items.length) repoCache.set(space, { at: Date.now(), items }); // an empty list is re-read next time
         return void json(res, 200, { items });
       }
@@ -425,5 +476,5 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     }
   }
 
-  return { handle, onComment, drain, status: (space) => db.spaces[space], close: () => clearInterval(timer) };
+  return { oauth, handle, onComment, drain, status: (space) => db.spaces[space], close: () => clearInterval(timer) };
 }

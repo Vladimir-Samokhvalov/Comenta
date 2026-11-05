@@ -208,12 +208,12 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 
 ```
 посетитель ──comment──▶ ваш сервер ──token──▶ GitHub: issue, вложения, Project v2
-владелец ──<comenta-settings>──▶ ваш сервер (/api/github/*) ──OAuth──▶ GitHub
+владелец ──<comenta-settings>──▶ ваш сервер (/api/github/*) ──GitHub App──▶ GitHub
 ```
 
 Три части:
 
-* `@comenta/feedback/github` — серверный модуль (Node 18+, Deno, Bun, edge: нужен только `fetch`): OAuth, списки репозиториев и проектов, создание issue. В браузер его не отдавайте.
+* `@comenta/feedback/github` — серверный модуль (Node 18+, Deno, Bun, edge: нужен только `fetch`): вход через GitHub App, списки репозиториев и проектов, создание issue. В браузер его не отдавайте.
 * `@comenta/feedback/settings` — компонент `<comenta-settings>` для страницы владельца (или `settings.iife.js` тегом `<script>`). В бандл виджета для посетителей он не входит.
 * Ваш сервер связывает их. Рабочий пример без зависимостей: [`demo/github.mjs`](demo/github.mjs) (его подключает `demo/server.mjs`).
 
@@ -229,18 +229,21 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 
 ### Подключение на своём сервере
 
-1. Создайте OAuth App: GitHub → Settings → Developer settings → OAuth Apps. Callback URL: `https://ваш-сайт/api/github/auth/callback`.
-2. Задайте переменные окружения `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (и `PUBLIC_URL`, если сервер стоит за прокси).
+GitHub App регистрируется один раз, вами как автором сайта. Владельцы и гости этого шага не видят: у них только кнопка «Войти через GitHub» и выбор репозиториев на GitHub.
+
+1. Зарегистрируйте GitHub App одной командой: `PUBLIC_URL=https://ваш-сайт pnpm github-app:setup` (без `PUBLIC_URL` — для `http://localhost:5174`). Откроется GitHub с уже заполненной формой, останется нажать «Create GitHub App». Данные сохранятся в `demo/github-app.json` (права 600, в `.gitignore`), затем перезапустите сервер. Приложение будет приватным, установить его сможете только вы; чтобы его могли ставить другие аккаунты и чужие организации, добавьте `COMENTA_GITHUB_APP_PUBLIC=1`.
+2. Вместо файла можно задать переменные окружения `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (и `PUBLIC_URL`, если сервер стоит за прокси). Регистрируете вручную: Callback URL `https://ваш-сайт/api/github/auth/callback`, включите «Request user authorization (OAuth) during installation», webhook выключен, права как в разделе «Права».
 3. Реализуйте маршруты, которые ждёт `<comenta-settings>` (пример — `demo/github.mjs`):
 
 | Маршрут | Что делает |
 |---|---|
-| `GET {endpoint}/status` | `{ oauth, pat, connected, reason?: 'expired', account?, config?, missingScopes?, sync? }` |
+| `GET {endpoint}/status` | `{ oauth, pat, connected, app?, reason?: 'expired', account?, config?, missingScopes?, sync? }` |
 | `GET {endpoint}/auth/login?return=` | редирект на GitHub (`authorizeUrl`, `state` в cookie) |
-| `GET {endpoint}/auth/callback` | проверка `state`, `exchangeCode`, токен — в хранилище, браузеру — HttpOnly cookie |
+| `GET {endpoint}/auth/callback` | проверка `state`, `exchangeCode`, токен и refresh-токен — в хранилище, браузеру — HttpOnly cookie. Если `countInstallations` вернул 0 — редирект на `installUrl` |
+| `GET {endpoint}/auth/install?return=` | редирект на `installUrl` (`state` в cookie): установка приложения и выбор репозиториев |
 | `POST {endpoint}/auth/token` | `{ token }`: personal access token (для локальной разработки) |
 | `POST {endpoint}/auth/logout` | `revokeGrant` + удаление токена |
-| `GET {endpoint}/repos` | `{ items }` из `listRepos` (только где есть права на запись) |
+| `GET {endpoint}/repos` | `{ items }` из `listInstallationRepos`, для токена — из `listRepos` (только где есть права на запись) |
 | `GET {endpoint}/projects?owner=` | `{ items }` из `listProjects` |
 | `PUT {endpoint}/config` | `{ repo: 'owner/name', projectId }` → `checkRepo` → `{ config }` |
 
@@ -251,7 +254,8 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 ```ts
 import { GitHubClient, GitHubError, syncComment } from '@comenta/feedback/github';
 
-const gh = new GitHubClient({ token: owner.token });
+// токен пользователя живёт 8 часов: функция вызывается перед каждым запросом и обновляет его через refreshAccessToken
+const gh = new GitHubClient({ token: () => owner.freshToken() });
 try {
   const issue = await syncComment(gh, { owner: 'acme', repo: 'site', projectId: owner.projectId }, payload, files, {
     checkExisting: attempt > 0, // на повторах искать уже созданный issue
@@ -280,13 +284,16 @@ try {
 
 ### Права
 
-OAuth App запрашивает `repo` (issues и загрузка записей, в том числе в приватных репозиториях), `project` (Projects v2), `read:org` (проекты и репозитории организаций), `read:user`. Если какого-то права нет, настройки скажут, какого именно, и предложат войти заново. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
+GitHub App просит только то, что нужно: Issues и Contents на запись (issues и загрузка записей), Metadata на чтение, Organization projects на запись (Projects v2 организаций). Токен работает только в репозиториях, выбранных при установке, и только там, где права есть и у самого пользователя; список меняется ссылкой «Изменить доступ к репозиториям на GitHub» в настройках. Issues создаются от имени владельца, с отметкой приложения. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
+
+Токен пользователя живёт 8 часов и обновляется сам. Refresh-токен живёт 6 месяцев; если сервер столько не обращался к GitHub, настройки попросят войти заново.
 
 ### Ошибки и как их видит владелец
 
 | Ситуация | Что происходит |
 |---|---|
-| Не вошёл | Кнопка «Войти через GitHub»; без OAuth на сервере — форма для токена |
+| Не вошёл | Кнопка «Войти через GitHub»; без GitHub App на сервере — форма для токена |
+| Приложение не установлено | После входа GitHub сразу предлагает установку и выбор репозиториев; если уйти с этой страницы, в настройках будет подсказка и ссылка на установку |
 | Токен истёк или отозван | Баннер «Доступ к GitHub истёк…», кнопка «Войти заново». Комментарии копятся в очереди и уходят после входа; выбранный репозиторий сохраняется |
 | Не хватает прав | Предупреждение со списком прав; репозиторий без прав на запись или с выключенными issues не сохраняется, с понятной причиной |
 | Нет репозиториев / проектов | Подсказка вместо пустого списка; проект необязателен |
@@ -300,7 +307,7 @@ OAuth App запрашивает `repo` (issues и загрузка записе
 pnpm demo:github    # тестовый GitHub на /__github: вход, репозитории, проекты, issues
 ```
 
-Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. С настоящим GitHub: `GITHUB_CLIENT_ID=… GITHUB_CLIENT_SECRET=… pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
+Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
 
 ## Разработка
 
@@ -311,6 +318,7 @@ pnpm test           # unit (Vitest + jsdom): селектор, санитиза�
 pnpm test:e2e       # build + Playwright по демо-странице и настройкам GitHub (тестовый GitHub)
 pnpm demo           # http://localhost:5174 — демо + мок-сервер
 pnpm demo:github    # то же с тестовым GitHub (настройки: /demo/settings.html)
+pnpm github-app:setup # регистрация GitHub App для настоящего GitHub, один раз
 pnpm size           # gzip-размеры, бюджет 30 КБ
 pnpm standalone     # dist/demo-standalone.html: демо одним файлом, открывается двойным кликом
 ```
@@ -338,4 +346,4 @@ tests/e2e     Playwright
 
 ## Дальше (вне MVP)
 
-Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: ответы в треде → комментарии issue, «Решён» → закрытие issue, GitHub App вместо OAuth App (права на отдельные репозитории).
+Скриншоты, упоминания @имя, редактирование самого комментария, авторизация, интеграции с YouTrack/GitLab (через адаптер), мобильные жесты, iframe. GitHub: ответы в треде → комментарии issue, «Решён» → закрытие issue, issues от имени бота приложения (installation token) вместо владельца.

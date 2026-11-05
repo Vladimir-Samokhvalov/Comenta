@@ -25,6 +25,7 @@ export const SETTINGS_STYLES = /* css */ `
 .cs-field { display: flex; flex-direction: column; gap: 6px; }
 .cs-label { font-size: 13px; font-weight: 600; }
 .cs-hint { font-size: 12px; line-height: 16px; color: var(--cs-muted); }
+.cs-manage { display: block; margin-top: 4px; font-size: 12px; line-height: 16px; }
 .cs-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--cs-line);

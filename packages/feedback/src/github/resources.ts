@@ -64,6 +64,27 @@ export async function listRepos(client: GitHubClient, opts: { maxPages?: number 
   return raw.filter((r) => !r.archived).map(toRepo).filter((r) => r.canPush);
 }
 
+/**
+ * Same list for a GitHub App user token: only repositories chosen when the app was installed,
+ * across all its installations (personal account, organisations), that this user may write to.
+ */
+export async function listInstallationRepos(client: GitHubClient, opts: { maxPages?: number } = {}): Promise<GitHubRepo[]> {
+  const maxPages = opts.maxPages ?? 10;
+  const installations = await client.paginate<{ id: number }>('/user/installations?per_page=100', maxPages, 'installations');
+  const lists = await Promise.all(installations.map((i) => client.paginate<RawRepo>(`/user/installations/${i.id}/repositories?per_page=100`, maxPages, 'repositories')));
+  return lists
+    .flat()
+    .filter((r) => !r.archived)
+    .map(toRepo)
+    .filter((r) => r.canPush)
+    .sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
+}
+
+/** How many installations of the app this user can see; 0 means the app still has to be installed. */
+export async function countInstallations(client: GitHubClient): Promise<number> {
+  return (await client.get<{ total_count: number }>('/user/installations?per_page=1')).total_count;
+}
+
 /** One repository with the token's permissions. Throws a clear error when issues can't be created there. */
 export async function checkRepo(client: GitHubClient, owner: string, name: string): Promise<GitHubRepo> {
   const raw = await client.get<RawRepo>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);

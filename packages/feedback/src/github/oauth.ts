@@ -1,17 +1,8 @@
 import { GitHubClient } from './client';
 import { GitHubError, MESSAGES } from './errors';
 
-/**
- * OAuth App scopes the integration asks for:
- * - `repo`: create issues and upload recordings, private repositories included
- *   (use `public_repo` via `scopes` if you only need public ones);
- * - `project`: list Projects v2 and add issues to them;
- * - `read:org`: see projects and repositories of the owner's organisations;
- * - `read:user`: show the account in the settings.
- */
-export const DEFAULT_SCOPES = ['repo', 'project', 'read:org', 'read:user'];
-
 export interface OAuthAppOptions {
+  /** Client ID of the GitHub App (not its numeric App ID). */
   clientId: string;
   clientSecret: string;
   /** Default `https://github.com`. */
@@ -21,42 +12,71 @@ export interface OAuthAppOptions {
   fetch?: typeof fetch;
 }
 
-/** Where to send the owner to sign in. `state` must be random and checked in the callback. */
-export function authorizeUrl(o: { clientId: string; redirectUri: string; state: string; scopes?: string[]; webUrl?: string }): string {
-  const q = new URLSearchParams({
-    client_id: o.clientId,
-    redirect_uri: o.redirectUri,
-    scope: (o.scopes ?? DEFAULT_SCOPES).join(' '),
-    state: o.state,
-    allow_signup: 'false',
-  });
-  return `${(o.webUrl ?? 'https://github.com').replace(/\/$/, '')}/login/oauth/authorize?${q}`;
+const web = (url?: string) => (url ?? 'https://github.com').replace(/\/$/, '');
+
+/**
+ * Where to send the owner to sign in. `state` must be random and checked in the callback.
+ * A GitHub App has no scopes: what the token can do comes from the app's permissions and the
+ * repositories chosen when it was installed.
+ */
+export function authorizeUrl(o: { clientId: string; redirectUri: string; state: string; webUrl?: string }): string {
+  const q = new URLSearchParams({ client_id: o.clientId, redirect_uri: o.redirectUri, state: o.state, allow_signup: 'false' });
+  return `${web(o.webUrl)}/login/oauth/authorize?${q}`;
+}
+
+/**
+ * Where the owner installs the app and picks repositories. GitHub sends them back to the callback URL
+ * with `code` and this `state` when the app has "Request user authorization during installation" on.
+ */
+export function installUrl(o: { slug: string; state?: string; webUrl?: string }): string {
+  return `${web(o.webUrl)}/apps/${encodeURIComponent(o.slug)}/installations/new${o.state ? `?state=${encodeURIComponent(o.state)}` : ''}`;
 }
 
 export interface TokenResult {
   token: string;
-  scopes: string[];
+  /** Present when the app's user tokens expire (the default for GitHub Apps). */
+  refreshToken?: string;
+  /** When `token` expires, ms since epoch. */
+  expiresAt?: number;
 }
 
-/** Exchange the `code` from the callback for an access token. Runs on your server: it needs the client secret. */
-export async function exchangeCode(o: OAuthAppOptions & { code: string; redirectUri: string }): Promise<TokenResult> {
+async function requestToken(o: OAuthAppOptions, params: Record<string, string>): Promise<TokenResult> {
   const doFetch = o.fetch ?? globalThis.fetch.bind(globalThis);
   let res: Response;
   try {
-    res = await doFetch(`${(o.webUrl ?? 'https://github.com').replace(/\/$/, '')}/login/oauth/access_token`, {
+    res = await doFetch(`${web(o.webUrl)}/login/oauth/access_token`, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'comenta-feedback' },
-      body: JSON.stringify({ client_id: o.clientId, client_secret: o.clientSecret, code: o.code, redirect_uri: o.redirectUri }),
+      body: JSON.stringify({ client_id: o.clientId, client_secret: o.clientSecret, ...params }),
     });
   } catch {
     throw new GitHubError('network', MESSAGES.network);
   }
-  const data = (await res.json().catch(() => ({}))) as { access_token?: string; scope?: string; error?: string; error_description?: string };
+  // a GitHub outage must not look like a revoked token: the owner would be asked to sign in for nothing
+  if (res.status >= 500) throw new GitHubError('network', MESSAGES.network, { status: res.status });
+  const data = (await res.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string };
   if (!res.ok || !data.access_token) {
     if (data.error === 'bad_verification_code') throw new GitHubError('unauthorized', 'Код входа устарел. Нажмите «Войти через GitHub» ещё раз.');
     throw new GitHubError('unauthorized', `Не удалось войти через GitHub${data.error_description ? `: ${data.error_description}` : '.'}`);
   }
-  return { token: data.access_token, scopes: (data.scope ?? '').split(/[,\s]+/).filter(Boolean) };
+  return {
+    token: data.access_token,
+    ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}),
+    ...(data.expires_in ? { expiresAt: Date.now() + data.expires_in * 1000 } : {}),
+  };
+}
+
+/** Exchange the `code` from the callback for a user access token. Runs on your server: it needs the client secret. */
+export function exchangeCode(o: OAuthAppOptions & { code: string; redirectUri: string }): Promise<TokenResult> {
+  return requestToken(o, { code: o.code, redirect_uri: o.redirectUri });
+}
+
+/**
+ * New user access token from a refresh token. Refresh tokens are single-use: store the returned one,
+ * and never run two refreshes of one token at once. Throws `unauthorized` once it has expired (6 months).
+ */
+export function refreshAccessToken(o: OAuthAppOptions & { refreshToken: string }): Promise<TokenResult> {
+  return requestToken(o, { grant_type: 'refresh_token', refresh_token: o.refreshToken });
 }
 
 /**
@@ -83,7 +103,7 @@ export interface GitHubAccount {
   name: string | null;
   avatarUrl: string;
   htmlUrl: string;
-  /** OAuth scopes of the token (empty for fine-grained tokens, which have no scopes). */
+  /** Scopes of a classic personal access token (empty for GitHub App and fine-grained tokens). */
   scopes: string[];
 }
 

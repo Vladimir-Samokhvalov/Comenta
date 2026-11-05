@@ -53,6 +53,7 @@ if (mock) {
     GITHUB_WEB_URL: `http://localhost:${PORT}/__github`,
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID ?? 'mock-client',
     GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET ?? 'mock-secret',
+    GITHUB_APP_SLUG: process.env.GITHUB_APP_SLUG ?? 'comenta-mock',
   });
 }
 const github = createGitHubIntegration({
@@ -252,5 +253,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Comenta demo: http://localhost:${PORT}`);
-  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : process.env.GITHUB_CLIENT_ID ? '' : ' (OAuth не настроен: задайте GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET или GITHUB_MOCK=1)'}`);
+  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : github.oauth ? '' : ' (GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1)'}`);
 });

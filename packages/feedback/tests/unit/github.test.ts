@@ -6,6 +6,9 @@ import {
   authorizeUrl,
   checkRepo,
   exchangeCode,
+  installUrl,
+  listInstallationRepos,
+  refreshAccessToken,
   formatDuration,
   issueBody,
   issueTitle,
@@ -290,18 +293,63 @@ describe('syncComment', () => {
 });
 
 describe('OAuth', () => {
-  it('builds the authorize URL with scopes and state', () => {
+  it('builds the authorize URL with state and no scopes (a GitHub App has permissions instead)', () => {
     const u = new URL(authorizeUrl({ clientId: 'cid', redirectUri: 'https://site.test/cb', state: 's1' }));
     expect(u.origin + u.pathname).toBe('https://github.com/login/oauth/authorize');
-    expect(u.searchParams.get('scope')).toBe('repo project read:org read:user');
+    expect(u.searchParams.has('scope')).toBe(false);
     expect(u.searchParams.get('state')).toBe('s1');
   });
 
   it('exchanges a code; an expired code gives a clear error', async () => {
-    const good = (async () => ok({ access_token: 'gho_x', scope: 'repo,project' })) as unknown as typeof fetch;
-    expect(await exchangeCode({ clientId: 'a', clientSecret: 'b', code: 'c', redirectUri: 'r', fetch: good })).toEqual({ token: 'gho_x', scopes: ['repo', 'project'] });
+    const good = (async () => ok({ access_token: 'ghu_x', refresh_token: 'ghr_x', expires_in: 28800, scope: '' })) as unknown as typeof fetch;
+    const before = Date.now();
+    const got = await exchangeCode({ clientId: 'a', clientSecret: 'b', code: 'c', redirectUri: 'r', fetch: good });
+    expect(got).toMatchObject({ token: 'ghu_x', refreshToken: 'ghr_x' });
+    expect(got.expiresAt).toBeGreaterThanOrEqual(before + 28800_000);
     const bad = (async () => ok({ error: 'bad_verification_code' })) as unknown as typeof fetch;
     await expect(exchangeCode({ clientId: 'a', clientSecret: 'b', code: 'c', redirectUri: 'r', fetch: bad })).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('refreshes a token; a dead refresh token asks to sign in, a GitHub outage does not', async () => {
+    const calls: Array<Record<string, string>> = [];
+    const good = (async (_: string, init: RequestInit) => {
+      calls.push(JSON.parse(String(init.body)));
+      return ok({ access_token: 'ghu_new', refresh_token: 'ghr_new', expires_in: 28800 });
+    }) as unknown as typeof fetch;
+    const o = { clientId: 'a', clientSecret: 'b', refreshToken: 'ghr_old' };
+    expect(await refreshAccessToken({ ...o, fetch: good })).toMatchObject({ token: 'ghu_new', refreshToken: 'ghr_new' });
+    expect(calls[0]).toEqual({ client_id: 'a', client_secret: 'b', grant_type: 'refresh_token', refresh_token: 'ghr_old' });
+    const dead = (async () => ok({ error: 'bad_refresh_token' })) as unknown as typeof fetch;
+    await expect(refreshAccessToken({ ...o, fetch: dead })).rejects.toMatchObject({ code: 'unauthorized' });
+    const down = (async () => ok({ message: 'oops' }, 503)) as unknown as typeof fetch;
+    await expect(refreshAccessToken({ ...o, fetch: down })).rejects.toMatchObject({ code: 'network', retryable: true });
+  });
+
+  it('builds the install URL', () => {
+    expect(installUrl({ slug: 'comenta-1', state: 's 1' })).toBe('https://github.com/apps/comenta-1/installations/new?state=s%201');
+  });
+
+  it('asks a token function before every request', async () => {
+    const seen: string[] = [];
+    const fetch = (async (_: string, init: RequestInit) => {
+      seen.push((init.headers as Record<string, string>).Authorization);
+      return ok({});
+    }) as unknown as typeof globalThis.fetch;
+    let n = 0;
+    const client = new GitHubClient({ token: async () => `t${++n}`, fetch });
+    await client.get('/a');
+    await client.get('/b');
+    expect(seen).toEqual(['Bearer t1', 'Bearer t2']);
+  });
+
+  it('lists repositories of all installations: writable, not archived, latest first', async () => {
+    const repo = (name: string, pushed_at: string, extra = {}) => ({ full_name: `me/${name}`, name, owner: { login: 'me', type: 'User' }, private: false, has_issues: true, html_url: '', default_branch: 'main', pushed_at, permissions: { push: true }, ...extra });
+    const { client } = fakeGitHub({
+      'GET /user/installations': () => ok({ total_count: 2, installations: [{ id: 1 }, { id: 2 }] }),
+      'GET /user/installations/1/repositories': () => ok({ repositories: [repo('old', '2026-01-01T00:00:00Z'), repo('archived', '2026-09-01T00:00:00Z', { archived: true })] }),
+      'GET /user/installations/2/repositories': () => ok({ repositories: [repo('new', '2026-06-01T00:00:00Z'), repo('readonly', '2026-07-01T00:00:00Z', { permissions: { pull: true } })] }),
+    });
+    expect((await listInstallationRepos(client)).map((r) => r.name)).toEqual(['new', 'old']);
   });
 });
 

@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { widget } from './helpers';
 
@@ -30,6 +34,7 @@ type State = {
   branches: Record<string, string[]>;
   projectItems: Array<{ projectId: string; contentId: string }>;
   revoked: number;
+  refreshes: number;
 };
 const ghState = async (page: Page): Promise<State> => (await page.request.get('/__github/state')).json();
 const control = (page: Page, data: object) => page.request.post('/__github/control', { data });
@@ -151,7 +156,7 @@ test.describe('GitHub settings', () => {
   test('no repositories / no projects', async ({ page }) => {
     await control(page, { repos: 'empty' });
     await signIn(page);
-    await expect(s(page).notes.filter({ hasText: 'Нет репозиториев, где у вас есть права на запись' })).toBeVisible();
+    await expect(s(page).notes.filter({ hasText: 'Приложению пока не открыт' })).toBeVisible();
     await expect(s(page).repo).toBeDisabled();
     await control(page, { repos: 'default', projects: 'empty' });
     await page.reload();
@@ -162,13 +167,79 @@ test.describe('GitHub settings', () => {
   });
 
   test('missing project permission: warning, repo still usable', async ({ page }) => {
-    await control(page, { scopes: 'repo read:user' });
+    await control(page, { scopes: 'none' });
     await signIn(page);
-    await expect(s(page).notes.filter({ hasText: 'Токену не хватает прав: project' })).toBeVisible();
     await pickRepo(page, 'landing', 'demo-owner/landing');
-    await expect(s(page).notes.filter({ hasText: 'read:project' })).toBeVisible();
+    await expect(s(page).notes.filter({ hasText: 'У токена нет нужных прав' })).toBeVisible();
     await s(page).save.click();
     await expect(s(page).ok).toBeVisible();
+  });
+
+  test('classic token without the project scope: warning names it', async ({ page }) => {
+    await control(page, { scopes: 'repo read:user' });
+    await page.goto('/demo/settings.html');
+    await s(page).details.click();
+    await s(page).token.fill('ghp_mock_local_dev_token_no_project');
+    await page.keyboard.press('Enter');
+    await expect(s(page).notes.filter({ hasText: 'Токену не хватает прав: project' })).toBeVisible();
+  });
+
+  test('app not installed yet: sign-in goes on to the install page and comes back connected', async ({ page }) => {
+    await control(page, { installed: false });
+    await page.goto('/demo/settings.html');
+    await s(page).login.click();
+    await page.locator('#authorize').click();
+    await expect(page).toHaveTitle(/Install/);
+    await page.locator('#install').click();
+    await page.waitForURL(/\/demo\/settings\.html$/);
+    await expect(s(page).name).toHaveText('Владимир');
+    await s(page).repo.click();
+    await expect(s(page).options).toHaveCount(6);
+  });
+
+  test('install cancelled: signed in, the list explains and links to GitHub', async ({ page }) => {
+    await control(page, { installed: false });
+    await page.goto('/demo/settings.html');
+    await s(page).login.click();
+    await page.locator('#authorize').click();
+    await expect(page).toHaveTitle(/Install/);
+    await page.goto('/demo/settings.html'); // GitHub has no "cancel" here: the owner just comes back
+    await expect(s(page).notes.filter({ hasText: 'Приложению пока не открыт' })).toBeVisible();
+    await expect(page.locator('comenta-settings .cs-manage')).toHaveAttribute('href', /\/api\/github\/auth\/install/);
+  });
+
+  test('only repositories chosen at install are offered and accepted', async ({ page }) => {
+    await control(page, { selected: ['demo-owner/landing'] });
+    await signIn(page);
+    await s(page).repo.click();
+    await expect(s(page).options).toHaveCount(1);
+    await expect(page.locator('comenta-settings .cs-opt[data-repo="demo-owner/landing"]')).toBeVisible();
+    const res = await page.request.put('/api/github/config', { data: { repo: 'acme-studio/web-app' }, headers: { 'X-Comenta-Space': space } });
+    expect(res.status()).toBe(404);
+  });
+
+  test('an expired user token is refreshed without asking the owner', async ({ page }) => {
+    await control(page, { expiresIn: 1 });
+    await configure(page, 'demo-owner/landing', null);
+    await control(page, { expiresIn: 28800 });
+    const res = await leaveComment(page, 'После истечения токена');
+    expect(res.issue?.number).toBe(1);
+    expect((await ghState(page)).refreshes).toBeGreaterThan(0);
+    await page.goto('/demo/settings.html');
+    await expect(s(page).name).toHaveText('Владимир');
+  });
+
+  test('pnpm github-app:setup registers the app from a manifest and saves its credentials', async ({ page, baseURL }) => {
+    const file = join(tmpdir(), `comenta-app-${Date.now()}.json`);
+    const child = spawn('node', ['demo/github-app-setup.mjs'], {
+      env: { ...process.env, SETUP_PORT: '5177', GITHUB_APP_FILE: file, GITHUB_WEB_URL: `${baseURL}/__github`, GITHUB_API_URL: `${baseURL}/__github/api` },
+    });
+    await new Promise((r) => child.stdout.once('data', r));
+    await page.goto('http://localhost:5177/');
+    await expect(page.locator('h1')).toHaveText('GitHub App создан');
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ slug: 'comenta-mock', clientId: 'mock-client', clientSecret: 'mock-secret' });
+    rmSync(file);
+    child.kill();
   });
 
   test('repository with issues turned off: clear error on save', async ({ page }) => {
