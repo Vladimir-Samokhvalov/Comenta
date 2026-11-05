@@ -134,7 +134,14 @@
       el.textContent = `${new Date().toLocaleTimeString()} ${msg}\n` + el.textContent;
     };
     // separate server-side stores per test run (set by the e2e tests); everyone else shares one
-    const headers = () => ({ 'X-Comenta-Space': window.__comentaSpace ?? 'default' });
+    // demo only: tells the server who is looking (GitHub state and comments are for the owner and the
+    // comment's author); a real site's backend knows who is signed in
+    const guestId = () => { try { return JSON.parse(localStorage.getItem('comenta:guest') ?? 'null')?.id; } catch { return undefined; } };
+    const headers = () => {
+      const u = users[userSelect.value];
+      const id = u?.id ?? guestId();
+      return { 'X-Comenta-Space': window.__comentaSpace ?? 'default', ...(u?.role === 'owner' ? { 'X-Comenta-Role': 'owner' } : {}), ...(id ? { 'X-Comenta-User': id } : {}) };
+    };
     const adapters = {
       http: () => httpAdapter({ endpoint: '/api/feedback', headers }),
       fail: () => httpAdapter({ endpoint: '/api/feedback?fail=1', headers }),

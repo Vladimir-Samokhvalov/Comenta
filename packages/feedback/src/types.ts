@@ -40,6 +40,8 @@ export interface FeedbackPayload {
   /** Who resolved the thread and when (set together with `status: 'resolved'`). */
   resolvedBy?: FeedbackAuthor;
   resolvedAt?: string;
+  /** `github`: the thread was closed by closing its issue on GitHub (`resolvedBy` is the GitHub user, if known). */
+  resolvedVia?: 'github' | (string & {});
   /** Replies, oldest first. Returned by `list()` / `listAll()`; not sent with `submit`. */
   replies?: FeedbackReply[];
   /** Issue created from this comment in a tracker (set by the backend, e.g. the GitHub integration). */
@@ -57,6 +59,26 @@ export interface FeedbackIssueLink {
   nodeId?: string;
   /** Projects v2 node id the issue was added to. */
   projectId?: string;
+  /**
+   * Issue state on the tracker, kept up to date by the backend's sync. Absent: not synced yet.
+   * Backends should send it (and replies with `origin`) only to the site owner and the comment's author (see `forViewer`).
+   */
+  state?: 'open' | 'closed';
+  /** Why it was closed: GitHub's `state_reason` (`completed`, `not_planned`, `duplicate`…). */
+  stateReason?: string | null;
+  /** ISO 8601, when `state` is `closed`. */
+  closedAt?: string;
+  /** `updated_at` of the issue snapshot the state comes from (sync bookkeeping). */
+  stateAt?: string;
+  /** The issue can no longer be read: deleted, transferred to a repository the app can't see, or access lost. */
+  unavailable?: 'deleted' | 'transferred' | 'no_access';
+}
+
+/** The copy of a reply in a tracker (a GitHub issue comment). */
+export interface FeedbackReplyLink {
+  provider: 'github' | (string & {});
+  id: number | string;
+  url: string;
 }
 
 export type FeedbackStatus = 'open' | 'resolved';
@@ -74,6 +96,13 @@ export interface FeedbackReply {
   updatedAt?: string;
   author?: FeedbackAuthor;
   attachments?: FeedbackAttachment[];
+  /**
+   * Where the reply was written. `github`: a comment on the linked issue, imported by the backend
+   * (read-only in the widget, shown with the GitHub name and avatar). Absent: written in Comenta.
+   */
+  origin?: 'github' | (string & {});
+  /** The tracker comment: the original for imported replies, the copy for Comenta replies the backend posted. */
+  link?: FeedbackReplyLink;
 }
 
 /** A status change sent to `adapter.setStatus`. */
@@ -125,6 +154,10 @@ export interface FeedbackAuthor {
    * The widget only hides buttons; your server must enforce the same rule.
    */
   role?: 'owner' | 'member';
+  /** Avatar image URL (set for authors of replies imported from GitHub). */
+  avatarUrl?: string;
+  /** Profile page (GitHub profile for imported replies). */
+  url?: string;
 }
 
 /**
@@ -231,6 +264,16 @@ export interface FeedbackLabels {
   replies: (n: number) => string;
   /** Thread header link to the tracker issue, e.g. `GitHub #12`. */
   issueLink: (issue: FeedbackIssueLink) => string;
+  /** Issue state next to the link in the thread header: `открыт` / `закрыт`. */
+  issueState: (issue: FeedbackIssueLink) => string;
+  /** Issue state with the close reason (tooltip, comments list): `закрыт · выполнен`. */
+  issueStateLong: (issue: FeedbackIssueLink) => string;
+  /** The linked issue was deleted, transferred or access to it was lost. */
+  issueUnavailable: string;
+  /** Event line when the issue was closed on GitHub: `octo закрыл(а) на GitHub · не будет сделан`. */
+  closedOnGitHub: (name: string | undefined, reason: string | null) => string;
+  /** Mark on replies written on GitHub. */
+  fromGitHub: string;
 }
 
 export interface FeedbackOptions {

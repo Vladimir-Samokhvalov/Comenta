@@ -70,8 +70,8 @@ async function configure(page: Page, repo = 'acme-studio/web-app', project: stri
   await expect(s(page).ok).toHaveText('✓ Сохранено.');
 }
 
-async function leaveComment(page: Page, text: string) {
-  await page.goto('/');
+async function leaveComment(page: Page, text: string, path = '/') {
+  await page.goto(path);
   const w = widget(page);
   await w.toggle.click();
   await page.locator('#inc').click();
@@ -419,5 +419,252 @@ test.describe('comments → GitHub issues', () => {
     expect(res.issue).toBeUndefined();
     await widget(page).pins.first().click();
     await expect(page.locator('comenta-feedback .ph-issue')).toHaveCount(0);
+  });
+});
+
+test.describe('GitHub issue ↔ thread sync', () => {
+  type Comment = { id: number; repo: string; number: number; body: string; login: string };
+  const comments = async (page: Page): Promise<Comment[]> => (await (await page.request.get('/__github/state')).json()).comments;
+  const act = async (page: Page, data: object) => (await page.request.post('/__github/issue', { data })).json();
+  const state = (page: Page) => page.locator('comenta-feedback .ph-issue-state');
+  const github = (page: Page) => page.locator('comenta-feedback .ph-msg-github');
+
+  /** Configured repo, one comment that became issue #1, its thread open; the widget re-reads every 400 ms. */
+  async function openSyncedThread(page: Page, text = 'Кнопка «+1» считает дважды') {
+    await configure(page);
+    const res = await leaveComment(page, text, '/?poll=400');
+    expect(res.issue?.number).toBe(1);
+    await widget(page).pins.first().click();
+    await expect(page.locator('comenta-feedback .ph-issue')).toHaveText('GitHub #1');
+    return res;
+  }
+
+  async function reply(page: Page, text: string) {
+    const w = widget(page);
+    await w.replyBox.fill(text);
+    const done = page.waitForResponse((r) => r.url().includes('/replies') && r.request().method() === 'POST');
+    await w.replyBtn.click();
+    await done;
+  }
+
+  test('one status: closing or reopening the issue on GitHub closes or reopens the thread', async ({ page }) => {
+    await openSyncedThread(page);
+    const w = widget(page);
+    const event = page.locator('comenta-feedback .ph-event');
+    await expect(w.status).toHaveText('Открыт');
+    await expect(state(page)).toHaveCount(0); // no second badge
+    await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'completed', login: 'octo-dev' });
+    await expect(w.status).toHaveText('Закрыт');
+    await expect(w.status).toHaveAttribute('data-status', 'resolved');
+    await expect(event).toHaveText(/^octo-dev закрыл\(а\) на GitHub · \d/);
+    // the button follows: reopen only, no second close
+    await expect(w.resolveBtn).toHaveAttribute('aria-label', 'Открыть снова');
+    await expect(w.replyResolveBtn).toBeHidden();
+    await act(page, { repo: 'acme-studio/web-app', number: 1, reopen: true });
+    await expect(w.status).toHaveText('Открыт');
+    await expect(event).toHaveCount(0);
+    await expect(w.resolveBtn).toHaveAttribute('aria-label', 'Закрыть');
+    // "not planned" / duplicate: the same "Закрыт", in grey, with the reason
+    await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'not_planned', login: 'octo-dev' });
+    await expect(w.status).toHaveAttribute('data-status', 'closed-other');
+    await expect(w.status).toHaveText('Закрыт');
+    await expect(event).toHaveText(/^octo-dev закрыл\(а\) на GitHub · не будет сделан · \d/);
+    // the list's "Закрытые" filter has it
+    await page.keyboard.press('Escape');
+    await w.more.click();
+    await page.locator('comenta-feedback .ph-mi-all').click();
+    await page.locator('comenta-feedback .ph-panel-filters button', { hasText: 'Закрытые' }).click();
+    await expect(w.items).toHaveCount(1);
+  });
+
+  test('closing or reopening in Comenta closes or reopens the issue; GitHub keeps agreeing', async ({ page }) => {
+    await openSyncedThread(page);
+    const w = widget(page);
+    const issue = async () => (await ghState(page)).issues[0] as unknown as { state: string; state_reason: string | null };
+    await w.resolveBtn.click();
+    await expect(w.status).toHaveText('Закрыт');
+    await expect(page.locator('comenta-feedback .ph-event')).toHaveText(/^Вы закрыли/);
+    expect(await issue()).toMatchObject({ state: 'closed', state_reason: 'completed' });
+    // several polls later it is still closed (the poll that was on its way does not undo it)
+    await page.waitForTimeout(1200);
+    await expect(w.status).toHaveText('Закрыт');
+    await expect(w.resolveBtn).toHaveAttribute('aria-label', 'Открыть снова');
+    await w.resolveBtn.click();
+    await expect(w.status).toHaveText('Открыт');
+    expect(await issue()).toMatchObject({ state: 'open' });
+    // "reply and close": the reply reaches the issue, then the issue is closed
+    await w.replyBox.fill('Исправлено в релизе');
+    await w.replyResolveBtn.click();
+    await expect(w.status).toHaveText('Закрыт');
+    expect(await issue()).toMatchObject({ state: 'closed' });
+    expect((await comments(page)).map((c) => c.body.split('\n')[0])).toEqual(['**Владимир:** Исправлено в релизе']);
+  });
+
+  test('GitHub does not answer: the status stays and the error is shown', async ({ page }) => {
+    await openSyncedThread(page);
+    await control(page, { failNext: 1000 });
+    await widget(page).resolveBtn.click();
+    await expect(widget(page).error).toContainText('Статус не изменён');
+    await expect(widget(page).status).toHaveText('Открыт');
+    await control(page, { failNext: 0 });
+    expect(((await ghState(page)).issues[0] as unknown as { state: string }).state).toBe('open');
+  });
+
+  test('comments written on GitHub appear in the thread with name, avatar and "из GitHub"; edits and deletions follow', async ({ page }) => {
+    await openSyncedThread(page);
+    const { id } = await act(page, { repo: 'acme-studio/web-app', number: 1, comment: 'Воспроизвёл, чиню', login: 'octo-dev' });
+    await expect(github(page)).toHaveCount(1);
+    await expect(github(page).locator('.ph-msg-name')).toContainText('octo-dev');
+    await expect(github(page).locator('.ph-msg-source')).toHaveText('из GitHub');
+    await expect(github(page).locator('.ph-avatar')).toHaveAttribute('src', /avatar\.svg$/);
+    await expect(github(page).locator('.ph-msg-text')).toHaveText('Воспроизвёл, чиню');
+    // read-only here
+    await expect(github(page).locator('.ph-msg-edit, .ph-msg-delete')).toHaveCount(0);
+    await act(page, { editComment: id, body: 'Воспроизвёл, починил в #42' });
+    await expect(github(page).locator('.ph-msg-text')).toHaveText('Воспроизвёл, починил в #42');
+    await expect(github(page).locator('.ph-msg-edited')).toBeVisible();
+    await act(page, { deleteComment: id });
+    await expect(github(page)).toHaveCount(0);
+  });
+
+  test('replies go to the issue as comments signed with the name only; no echo; edits and deletions follow', async ({ page }) => {
+    await openSyncedThread(page);
+    await reply(page, 'Спасибо, посмотрим @team');
+    await expect.poll(async () => (await comments(page)).length).toBe(1);
+    const [c] = await comments(page);
+    expect(c.body.split('\n')[0]).toBe('**Владимир:** Спасибо, посмотрим @​team');
+    expect(c.body).toMatch(/<!-- comenta:reply=[\w-]+ -->/);
+    expect(c.login).toBe(botMode ? 'comenta-mock[bot]' : 'demo-owner');
+    // several polls later the thread still has the comment and one reply: the copy is not imported back
+    await page.waitForTimeout(1500);
+    await expect(widget(page).msgs).toHaveCount(2);
+    await expect(github(page)).toHaveCount(0);
+    // polling uses conditional requests: unchanged answers are 304s, which cost no rate limit
+    expect((await (await page.request.get('/__github/state')).json()).notModified).toBeGreaterThan(0);
+    // edit → the GitHub comment is rewritten
+    await widget(page).msgs.last().hover();
+    await page.locator('comenta-feedback .ph-msg-edit').click();
+    await page.locator('comenta-feedback .ph-edit-text').fill('Спасибо, исправим завтра');
+    await page.locator('comenta-feedback .ph-edit-save').click();
+    await expect.poll(async () => (await comments(page))[0]?.body.split('\n')[0]).toBe('**Владимир:** Спасибо, исправим завтра');
+    // delete → the GitHub comment is deleted
+    await widget(page).msgs.last().hover();
+    await page.locator('comenta-feedback .ph-msg-delete').click();
+    await page.locator('comenta-feedback .ph-confirm .ph-btn-danger').click();
+    await expect.poll(async () => (await comments(page)).length).toBe(0);
+  });
+
+  test('other visitors see neither the GitHub state nor GitHub comments; the owner does', async ({ page, browser }) => {
+    const res = await openSyncedThread(page);
+    await act(page, { repo: 'acme-studio/web-app', number: 1, comment: 'Внутреннее обсуждение', login: 'octo-dev' });
+    await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'completed' });
+    await expect(github(page)).toHaveCount(1);
+    await expect(widget(page).status).toHaveText('Закрыт');
+    await expect(page.locator('comenta-feedback .ph-event')).toHaveText(/^octo-dev закрыл\(а\) на GitHub · \d/);
+
+    // a visitor: no GitHub session, not the owner
+    const ctx = await browser.newContext();
+    const guest = await ctx.newPage();
+    await guest.addInitScript((sp) => {
+      (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
+      localStorage.setItem('comenta-demo-user', 'anna');
+    }, space);
+    const listed = guest.waitForResponse((r) => r.url().includes('/api/feedback') && r.request().method() === 'GET');
+    await guest.goto(`/?poll=400#comenta=${res.id}`); // closed threads' pins are hidden: open it by link
+    const body = JSON.stringify(await (await listed).json());
+    expect(body).not.toContain('Внутреннее обсуждение'); // the server does not send it at all
+    expect(body).not.toContain('"state"');
+    expect(body).not.toContain('octo-dev');
+    await expect(guest.locator('comenta-feedback .ph-issue')).toHaveText('GitHub #1');
+    await expect(guest.locator('comenta-feedback .ph-issue-state')).toHaveCount(0);
+    await expect(guest.locator('comenta-feedback .ph-msg')).toHaveCount(1);
+    // everyone sees that it is closed, not who closed it on GitHub
+    await expect(widget(guest).status).toHaveText('Закрыт');
+    await expect(guest.locator('comenta-feedback .ph-event')).toHaveText(/^Закрыт · \d/);
+    await expect(widget(guest).resolveBtn).toHaveCount(0);
+    await ctx.close();
+
+    // the owner's own browser switched to another user hides them as well
+    await widget(page).userSelect.selectOption('anna');
+    await expect(github(page)).toHaveCount(0);
+    await expect(state(page)).toHaveCount(0);
+  });
+
+  test("the comment's author sees the GitHub state and comments of their own comment", async ({ page, browser }) => {
+    await configure(page);
+    const visitor = async (user: string) => {
+      const ctx = await browser.newContext();
+      const p = await ctx.newPage();
+      await p.addInitScript(([sp, u]) => {
+        (window as unknown as { __comentaSpace: string }).__comentaSpace = sp;
+        localStorage.setItem('comenta-demo-user', u);
+      }, [space, user] as const);
+      return { ctx, p };
+    };
+    // Anna (not the owner, no GitHub session) leaves a comment that becomes issue #1
+    const anna = await visitor('anna');
+    const res = await leaveComment(anna.p, 'Не вижу кнопку оплаты', '/?poll=400');
+    expect(res.issue?.number).toBe(1);
+    await widget(anna.p).pins.first().click();
+    await act(page, { repo: 'acme-studio/web-app', number: 1, comment: 'Уточните браузер, пожалуйста', login: 'octo-dev' });
+    await act(page, { repo: 'acme-studio/web-app', number: 1, close: 'completed' });
+    await expect(widget(anna.p).status).toHaveText('Закрыт');
+    await expect(anna.p.locator('comenta-feedback .ph-event')).toHaveText(/^octo-dev закрыл\(а\) на GitHub · \d/);
+    // the issue lives in the owner's repository: only the owner closes and reopens it
+    await expect(widget(anna.p).resolveBtn).toHaveCount(0);
+    await expect(github(anna.p).locator('.ph-msg-text')).toHaveText('Уточните браузер, пожалуйста');
+
+    // a guest looking at the same page does not get them
+    const guest = await visitor('guest');
+    const listed = guest.p.waitForResponse((r) => r.url().includes('/api/feedback') && r.request().method() === 'GET');
+    await guest.p.goto(`/?poll=400#comenta=${res.id}`);
+    expect(JSON.stringify(await (await listed).json())).not.toContain('Уточните браузер');
+    await expect(widget(guest.p).status).toHaveText('Закрыт');
+    await expect(guest.p.locator('comenta-feedback .ph-issue-state')).toHaveCount(0);
+    await expect(guest.p.locator('comenta-feedback .ph-msg-github')).toHaveCount(0);
+    await anna.ctx.close();
+    await guest.ctx.close();
+  });
+
+  test('deleted issue: the card says "Issue недоступен" and keeps the link', async ({ page }) => {
+    const res = await openSyncedThread(page);
+    await act(page, { repo: 'acme-studio/web-app', number: 1, delete: true });
+    await expect(state(page)).toHaveText('Issue недоступен');
+    await expect(page.locator('comenta-feedback .ph-issue')).toHaveAttribute('href', res.issue!.url);
+  });
+
+  test('transferred issue is marked unavailable too', async ({ page }) => {
+    await openSyncedThread(page);
+    await act(page, { repo: 'acme-studio/web-app', number: 1, transfer: 'acme-studio/mobile' });
+    await expect(state(page)).toHaveText('Issue недоступен');
+  });
+
+  test('GitHub down or rate-limited: replies wait and are sent once it is back', async ({ page }) => {
+    await openSyncedThread(page);
+    await control(page, { rateLimit: 2 });
+    await reply(page, 'Ответ во время лимита');
+    await control(page, { rateLimit: 0, failNext: 1000 });
+    await reply(page, 'Ответ, пока GitHub лежит');
+    await page.waitForTimeout(800);
+    expect(await comments(page)).toHaveLength(0);
+    // the replies are already in the thread for everyone on the site
+    await expect(widget(page).msgs).toHaveCount(3);
+    await control(page, { failNext: 0 });
+    await expect.poll(async () => (await comments(page)).map((c) => c.body.split('\n')[0]).sort(), { timeout: 15_000 }).toEqual(['**Владимир:** Ответ во время лимита', '**Владимир:** Ответ, пока GitHub лежит']);
+    // one copy each, even though the first attempts may have reached GitHub
+    await page.waitForTimeout(1000);
+    expect(await comments(page)).toHaveLength(2);
+  });
+
+  test('a reply written before the issue exists is posted after it is created', async ({ page }) => {
+    await configure(page);
+    await control(page, { failNext: 1000 });
+    const res = await leaveComment(page, 'Пока GitHub лежит', '/?poll=400');
+    expect(res.issue).toBeUndefined();
+    await widget(page).pins.first().click();
+    await reply(page, 'Уточнение к комментарию');
+    await control(page, { failNext: 0 });
+    await expect.poll(async () => (await ghState(page)).issues.length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await comments(page)).map((c) => [c.number, c.body.split('\n')[0]]), { timeout: 10_000 }).toEqual([[1, '**Владимир:** Уточнение к комментарию']]);
   });
 });

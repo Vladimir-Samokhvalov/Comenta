@@ -16,3 +16,24 @@ export { issueTitle, issueBody, attachmentCaption, formatDuration, neutralize, m
 export type { UploadedAttachment } from './issue';
 export { syncComment, findIssue, addToProject, uploadAttachments, ensureBranch } from './sync';
 export type { GitHubTarget, SyncFile, SyncOptions, SyncResult } from './sync';
+export {
+  replyMarker,
+  replyIdOf,
+  targetOf,
+  issueStateOf,
+  applyIssueState,
+  applyIssueStatus,
+  setIssueState,
+  fetchIssue,
+  fetchIssueComments,
+  fetchRepoActivity,
+  replyCommentBody,
+  findReplyComment,
+  postReply,
+  updateReplyComment,
+  deleteReplyComment,
+  replyFromComment,
+  mergeIssueComments,
+  forViewer,
+} from './threads';
+export type { GitHubIssueComment, GitHubIssueState, RepoCursor, Viewer, IssueFetch, CommentsFetch, RepoActivity, PostReplyOptions, MergeResult } from './threads';

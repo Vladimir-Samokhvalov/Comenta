@@ -241,12 +241,18 @@ export class Thread {
 
     // header: #n · category, status, resolve / reopen, close
     const badge = p.kind ? `#${m.n} · ${L.kindEmoji[p.kind]} ${L.kinds[p.kind]}` : `#${m.n}`;
+    // closed on GitHub as "not planned" / duplicate: the same "Закрыт", in grey
+    const closedOther = resolved && !!p.issue?.stateReason && p.issue.stateReason !== 'completed' && p.issue.state === 'closed';
+    const statusTitle = resolved && p.issue?.state === 'closed' ? `GitHub: ${L.issueStateLong(p.issue)}` : null;
     const headKids: Node[] = [
       h(d, 'span', { class: 'ph-badge' }, [badge]),
-      h(d, 'span', { class: 'ph-status', 'data-status': resolved ? 'resolved' : 'open' }, [resolved ? L.statusResolved : L.statusOpen]),
+      h(d, 'span', { class: 'ph-status', 'data-status': resolved ? (closedOther ? 'closed-other' : 'resolved') : 'open', title: statusTitle }, [resolved ? L.statusResolved : L.statusOpen]),
     ];
     if (p.issue && /^https?:\/\//.test(p.issue.url)) {
-      headKids.push(h(d, 'a', { class: 'ph-issue', href: p.issue.url, target: '_blank', rel: 'noopener noreferrer', title: `${p.issue.repo}#${p.issue.number}` }, [L.issueLink(p.issue)]));
+      const i = p.issue;
+      headKids.push(h(d, 'a', { class: 'ph-issue', href: i.url, target: '_blank', rel: 'noopener noreferrer', title: `${i.repo}#${i.number}` }, [L.issueLink(i)]));
+      // the issue can't be reached any more: the status above lives in Comenta only
+      if (i.unavailable) headKids.push(h(d, 'span', { class: 'ph-issue-state', 'data-state': 'unavailable', title: `${i.repo}#${i.number}` }, [L.issueUnavailable]));
     }
     headKids.push(h(d, 'span', { class: 'ph-spacer' }));
     if (m.canResolve) {
@@ -265,7 +271,8 @@ export class Thread {
     let eventShown = false;
     const event = () => {
       eventShown = true;
-      const text = !p.resolvedBy ? L.statusResolved : sameAuthor(p.resolvedBy, m.me) ? L.resolvedByYou : L.resolvedBy(displayName(p.resolvedBy, L));
+      let text = !p.resolvedBy ? L.statusResolved : sameAuthor(p.resolvedBy, m.me) ? L.resolvedByYou : L.resolvedBy(displayName(p.resolvedBy, L));
+      if (p.resolvedVia === 'github') text = L.closedOnGitHub(p.resolvedBy?.name, p.issue?.stateReason ?? null);
       return h(d, 'div', { class: 'ph-event', role: 'note' }, [checkIcon(d), `${text}${p.resolvedAt ? ` · ${formatTime(p.resolvedAt, L.locale)}` : ''}`]);
     };
     for (const r of p.replies ?? []) {
@@ -294,7 +301,15 @@ export class Thread {
     }
 
     const bubble = h(d, 'div', { class: 'ph-bubble' });
-    if (!mine) bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [displayName(item.author, L)]));
+    const external = reply?.origin === 'github';
+    if (external) {
+      wrap.classList.add('ph-msg-github');
+      const a = item.author;
+      const avatar = a?.avatarUrl && /^(https?:\/\/|\/)/.test(a.avatarUrl) ? h(d, 'img', { class: 'ph-avatar', src: a.avatarUrl, alt: '', width: 14, height: 14, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null;
+      const name = a?.url && /^https?:\/\//.test(a.url) ? h(d, 'a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, [displayName(a, L)]) : displayName(a, L);
+      const source = reply?.link?.url && /^https?:\/\//.test(reply.link.url) ? h(d, 'a', { class: 'ph-msg-source', href: reply.link.url, target: '_blank', rel: 'noopener noreferrer' }, [L.fromGitHub]) : h(d, 'span', { class: 'ph-msg-source' }, [L.fromGitHub]);
+      bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(a) }, [avatar, name, source]));
+    } else if (!mine) bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [displayName(item.author, L)]));
     if (item.text) bubble.append(h(d, 'div', { class: reply ? 'ph-msg-text' : 'ph-msg-text ph-view-text' }, [item.text]));
     if (item.attachments?.length) bubble.append(attachmentsView(d, item.attachments, L));
     bubble.append(
@@ -305,7 +320,7 @@ export class Thread {
     );
     wrap.append(bubble);
 
-    if (reply && mine && (m.canEdit || m.canDelete)) {
+    if (reply && mine && !external && (m.canEdit || m.canDelete)) {
       const tools = h(d, 'div', { class: 'ph-msg-tools' });
       if (m.canEdit && reply.text) {
         const e = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-msg-edit', 'aria-label': L.edit, title: L.edit }, [pencilIcon(d)]);

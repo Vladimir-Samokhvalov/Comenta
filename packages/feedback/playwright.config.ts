@@ -28,6 +28,8 @@ export default defineConfig({
       COMENTA_GITHUB_RETRY_MS: '20',
       COMENTA_GITHUB_BACKOFF_MS: '300',
       COMENTA_GITHUB_DRAIN_MS: '400',
+      COMENTA_GITHUB_POLL_MS: '300',
+      COMENTA_GITHUB_REFRESH_MS: '300',
     },
   },
 });

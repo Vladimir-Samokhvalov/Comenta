@@ -28,8 +28,10 @@ export interface RequestOptions {
   body?: unknown;
   /** Retry this request on 5xx / network errors. Default: true for GET/PUT/DELETE, false for POST/PATCH. */
   retry?: boolean;
-  /** Return null instead of throwing for these statuses. */
+  /** Return null instead of throwing for these statuses (e.g. `304` for conditional requests). */
   allow?: number[];
+  /** Extra request headers, e.g. `If-None-Match` with a stored ETag. */
+  headers?: Record<string, string>;
 }
 
 export interface GitHubResponse<T> {
@@ -93,6 +95,7 @@ export class GitHubClient {
           'X-GitHub-Api-Version': '2022-11-28',
           'User-Agent': this.opts.userAgent ?? 'comenta-feedback',
           ...(ro.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...ro.headers,
         },
         body: ro.body !== undefined ? JSON.stringify(ro.body) : undefined,
         signal: controller?.signal,
