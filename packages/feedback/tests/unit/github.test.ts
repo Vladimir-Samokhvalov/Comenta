@@ -1,7 +1,10 @@
+import { createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  GitHubAppAuth,
   GitHubClient,
   GitHubError,
+  createAppJwt,
   attachmentCaption,
   authorizeUrl,
   checkRepo,
@@ -349,7 +352,48 @@ describe('OAuth', () => {
       'GET /user/installations/1/repositories': () => ok({ repositories: [repo('old', '2026-01-01T00:00:00Z'), repo('archived', '2026-09-01T00:00:00Z', { archived: true })] }),
       'GET /user/installations/2/repositories': () => ok({ repositories: [repo('new', '2026-06-01T00:00:00Z'), repo('readonly', '2026-07-01T00:00:00Z', { permissions: { pull: true } })] }),
     });
-    expect((await listInstallationRepos(client)).map((r) => r.name)).toEqual(['new', 'old']);
+    const repos = await listInstallationRepos(client);
+    expect(repos.map((r) => r.name)).toEqual(['new', 'old']);
+    expect(repos.map((r) => r.installationId)).toEqual([2, 1]);
+  });
+});
+
+describe('GitHub App (bot)', () => {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+
+  it('signs an RS256 JWT with the PKCS#1 key GitHub hands out', async () => {
+    const now = Date.parse('2026-11-05T10:00:00Z');
+    const jwt = await createAppJwt(424242, privateKey, now);
+    const [h, p, sig] = jwt.split('.');
+    expect(verify('RSA-SHA256', Buffer.from(`${h}.${p}`), createPublicKey(privateKey), Buffer.from(sig, 'base64url'))).toBe(true);
+    expect(JSON.parse(Buffer.from(h, 'base64url').toString())).toEqual({ alg: 'RS256', typ: 'JWT' });
+    const claims = JSON.parse(Buffer.from(p, 'base64url').toString());
+    expect(claims).toEqual({ iss: '424242', iat: now / 1000 - 60, exp: now / 1000 + 540 });
+  });
+
+  it('rejects an unreadable key with a clear error', async () => {
+    await expect(createAppJwt(1, 'not a key')).rejects.toMatchObject({ code: 'not_configured' });
+  });
+
+  it('mints installation tokens once and reuses them until close to expiry', async () => {
+    let minted = 0;
+    const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/app/installations/7/access_tokens' && init.method === 'POST') {
+        expect((init.headers as Record<string, string>).Authorization).toMatch(/^Bearer ey/);
+        return ok({ token: `ghs_${++minted}`, expires_at: new Date(Date.now() + 3600_000).toISOString() }, 201);
+      }
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+    const auth = new GitHubAppAuth({ appId: 1, privateKey, apiUrl: 'https://api.test', fetch });
+    const [a, b] = await Promise.all([auth.installationToken(7), auth.installationToken(7)]);
+    expect(a.token).toBe('ghs_1');
+    expect(b.token).toBe('ghs_1');
+    expect((await auth.installationToken(7)).token).toBe('ghs_1');
+    auth.forget(7);
+    expect((await auth.installationToken(7)).token).toBe('ghs_2');
+    // removed app: GitHub answers 404 for the installation
+    await expect(auth.installationToken(8)).rejects.toMatchObject({ code: 'uninstalled' });
   });
 });
 

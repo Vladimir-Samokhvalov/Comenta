@@ -17,7 +17,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { createGitHubIntegration } from './github.mjs';
-import { createGitHubMock } from './github-mock.mjs';
+import { MOCK_APP, createGitHubMock } from './github-mock.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const LOG = process.env.FEEDBACK_LOG ?? join(ROOT, 'demo', 'feedback.log');
@@ -54,6 +54,8 @@ if (mock) {
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID ?? 'mock-client',
     GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET ?? 'mock-secret',
     GITHUB_APP_SLUG: process.env.GITHUB_APP_SLUG ?? 'comenta-mock',
+    // COMENTA_GITHUB_BOT=0: no private key, issues are created with the owner's user token
+    ...(process.env.COMENTA_GITHUB_BOT === '0' ? {} : { GITHUB_APP_ID: String(MOCK_APP.id), GITHUB_APP_PRIVATE_KEY: MOCK_APP.privateKey }),
   });
 }
 const github = createGitHubIntegration({
@@ -253,5 +255,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Comenta demo: http://localhost:${PORT}`);
-  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : github.oauth ? '' : ' (GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1)'}`);
+  console.log(`Настройки GitHub: http://localhost:${PORT}/demo/settings.html${mock ? ' (тестовый GitHub)' : github.oauth ? (github.bot ? ' (issues от имени бота приложения)' : ' (без приватного ключа: issues от вашего имени)') : ' (GitHub App не настроен: pnpm github-app:setup или GITHUB_MOCK=1)'}`);
 });

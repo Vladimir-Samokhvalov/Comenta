@@ -11,7 +11,20 @@
 //   POST /__github/control                   { revoke, rateLimit, failNext, repos, projects, scopes, delayMs,
 //                                              installed, selected, expiresIn }
 //   POST /__github/reset
+import { createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
+
 const AVATAR = '/__github/avatar.svg';
+/** The fake app. Its private key mints installation tokens (ghs_, issues authored by comenta-mock[bot]). */
+export const MOCK_APP = { id: 424242, slug: 'comenta-mock', clientId: 'mock-client', clientSecret: 'mock-secret' };
+MOCK_APP.privateKey = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey; // PKCS#1, like GitHub's .pem
+const PUBLIC_KEY = createPublicKey(MOCK_APP.privateKey);
+function verifyJwt(jwt) {
+  const [h, p, sig] = (jwt ?? '').split('.');
+  if (!sig) return false;
+  if (!verify('RSA-SHA256', Buffer.from(`${h}.${p}`), PUBLIC_KEY, Buffer.from(sig, 'base64url'))) return false;
+  const claims = JSON.parse(Buffer.from(p, 'base64url').toString());
+  return claims.iss === String(MOCK_APP.id) && claims.exp * 1000 > Date.now();
+}
 
 function initialState() {
   const repo = (owner, name, extra = {}) => ({
@@ -62,6 +75,7 @@ function initialState() {
     selected: null, // ['owner/name']: repositories chosen at install; null: all
     expiresIn: 28800, // lifetime of new user tokens, seconds
     refreshes: 0,
+    installationTokens: 0,
     calls: [],
   };
 }
@@ -111,6 +125,7 @@ export function createGitHubMock(base) {
     // personal access tokens for the "paste a token" path: anything starting with ghp_mock
     if (!s.tokens.has(t) && t.startsWith('ghp_mock')) s.tokens.set(t, { scopes: s.grantScopes ?? ['repo', 'project', 'read:org', 'read:user'], revoked: false });
     const rec = s.tokens.get(t);
+    if (rec?.installation && !s.installed) return null; // the app was removed
     return rec && !rec.revoked ? rec : null;
   };
 
@@ -132,7 +147,16 @@ export function createGitHubMock(base) {
       const manifest = manifests.get(code);
       if (!manifest) return json(res, 404, { message: 'Not Found' });
       manifests.delete(code);
-      return json(res, 201, { id: 1, slug: 'comenta-mock', client_id: 'mock-client', client_secret: 'mock-secret', pem: 'mock-pem', webhook_secret: null, html_url: `${base}/web/apps/comenta-mock`, name: manifest.name });
+      return json(res, 201, { id: MOCK_APP.id, slug: MOCK_APP.slug, client_id: MOCK_APP.clientId, client_secret: MOCK_APP.clientSecret, pem: MOCK_APP.privateKey, webhook_secret: null, html_url: `${base}/web/apps/comenta-mock`, name: manifest.name });
+    }
+    let mi;
+    if ((mi = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(path)) && req.method === 'POST') {
+      if (!verifyJwt(/^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1])) return json(res, 401, { message: 'A JSON web token could not be decoded' });
+      if (mi[1] !== '1' || !s.installed) return json(res, 404, { message: 'Not Found' });
+      const token = `ghs_mock_${rand()}`;
+      s.tokens.set(token, { app: true, installation: true, scopes: [], can: s.grantScopes ?? ['project'], revoked: false });
+      s.installationTokens++;
+      return json(res, 201, { token, expires_at: new Date(Date.now() + 3600_000).toISOString() });
     }
     const tok = tokenOf(req);
     if (!tok) return json(res, 401, { message: 'Bad credentials' });
@@ -183,7 +207,7 @@ export function createGitHubMock(base) {
       const body = await readBody(req);
       if (!body.title) return send(422, { message: 'Validation Failed' });
       const number = s.issues.filter((i) => i.repo === `${r.owner}/${r.name}`).length + 1;
-      const issue = { repo: `${r.owner}/${r.name}`, number, title: body.title, body: body.body ?? '', node_id: `I_mock_${r.name}_${number}`, html_url: `${base}/web/${r.owner}/${r.name}/issues/${number}` };
+      const issue = { repo: `${r.owner}/${r.name}`, number, title: body.title, body: body.body ?? '', node_id: `I_mock_${r.name}_${number}`, html_url: `${base}/web/${r.owner}/${r.name}/issues/${number}`, author: tok.installation ? `${MOCK_APP.slug}[bot]` : s.user.login };
       s.issues.push(issue);
       return send(201, issue);
     }
@@ -322,12 +346,13 @@ export function createGitHubMock(base) {
       return true;
     }
     if (path === '/state' && req.method === 'GET') {
-      json(res, 200, { issues: s.issues, files: [...s.files.keys()], branches: Object.fromEntries([...s.branches].map(([k, v]) => [k, [...v]])), projectItems: s.projectItems, calls: s.calls, refreshes: s.refreshes, revoked: [...s.tokens.values()].filter((t) => t.revoked && !t.refreshed).length });
+      json(res, 200, { issues: s.issues, files: [...s.files.keys()], branches: Object.fromEntries([...s.branches].map(([k, v]) => [k, [...v]])), projectItems: s.projectItems, calls: s.calls, refreshes: s.refreshes, installationTokens: s.installationTokens, revoked: [...s.tokens.values()].filter((t) => t.revoked && !t.refreshed).length });
       return true;
     }
     if (path === '/control' && req.method === 'POST') {
       const c = await readBody(req);
       if (c.revoke) for (const t of s.tokens.values()) t.revoked = true;
+      if (c.revokeUser) for (const t of s.tokens.values()) if (!t.installation) t.revoked = true; // the owner's sign-in ends, the app stays installed
       if ('rateLimit' in c) s.rateLimit = Number(c.rateLimit) || 0;
       if ('failNext' in c) s.failNext = Number(c.failNext) || 0;
       if ('delayMs' in c) s.delayMs = Number(c.delayMs) || 0;

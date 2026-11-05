@@ -59,6 +59,10 @@ export interface SettingsStatus {
   config?: SettingsConfig | null;
   /** Connected through the GitHub App: repository access is managed on GitHub. */
   app?: boolean;
+  /** Issues are created by the app's bot (installation token), not under the owner's account. */
+  bot?: boolean;
+  /** Signed out, but the bot still turns comments into issues. */
+  syncing?: boolean;
   /** Scopes the integration needs that the token lacks. */
   missingScopes?: string[];
   /** The integration is connected by someone else (shown to other visitors). */
@@ -102,6 +106,7 @@ const M = {
   login: 'Войти через GitHub',
   loginHint: 'GitHub предложит установить приложение и выбрать репозитории. Токен хранится на вашем сервере, браузер его не видит.',
   expired: 'Доступ к GitHub истёк или был отозван. Войдите заново, чтобы комментарии снова попадали в issues.',
+  sessionExpired: 'Сессия входа в GitHub истекла. Комментарии по-прежнему создают issues, войдите заново, чтобы менять настройки.',
   noOauth: 'Вход через GitHub не настроен на сервере: нет GitHub App. Для локальной разработки можно вставить токен.',
   patSummary: 'Вставить токен вместо входа (для локальной разработки)',
   patLabel: 'Personal access token',
@@ -300,7 +305,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
     /** Token expired mid-session: back to the sign-in view with the "expired" banner. */
     private handleAuthError(err: ApiError): boolean {
       if (err.code !== 'unauthorized') return false;
-      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired' };
+      const status: SettingsStatus = { ...(this.st.status ?? { oauth: true, pat: true }), connected: false, reason: 'expired', syncing: !!this.st.status?.bot };
       this.applyStatus(status);
       this.render();
       return true;
@@ -445,7 +450,7 @@ export function createSettingsElementClass(): CustomElementConstructor {
       const d = document;
       const s = this.st.status!;
       const kids: Node[] = [];
-      if (s.reason === 'expired') kids.push(this.note('warn', M.expired));
+      if (s.reason === 'expired') kids.push(s.syncing ? this.note('info', M.sessionExpired) : this.note('warn', M.expired));
       if (s.owner) kids.push(this.note('info', M.ownedBy(s.owner)));
       if (this.st.notice?.kind === 'error') kids.push(this.note('error', this.st.notice.text));
       if (s.oauth) {

@@ -231,13 +231,13 @@ export function youtrackAdapter(opts: { baseUrl: string; project: string; token:
 
 GitHub App регистрируется один раз, вами как автором сайта. Владельцы и гости этого шага не видят: у них только кнопка «Войти через GitHub» и выбор репозиториев на GitHub.
 
-1. Зарегистрируйте GitHub App одной командой: `PUBLIC_URL=https://ваш-сайт pnpm github-app:setup` (без `PUBLIC_URL` — для `http://localhost:5174`). Откроется GitHub с уже заполненной формой, останется нажать «Create GitHub App». Данные сохранятся в `demo/github-app.json` (права 600, в `.gitignore`), затем перезапустите сервер. Приложение будет приватным, установить его сможете только вы; чтобы его могли ставить другие аккаунты и чужие организации, добавьте `COMENTA_GITHUB_APP_PUBLIC=1`.
-2. Вместо файла можно задать переменные окружения `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (и `PUBLIC_URL`, если сервер стоит за прокси). Регистрируете вручную: Callback URL `https://ваш-сайт/api/github/auth/callback`, включите «Request user authorization (OAuth) during installation», webhook выключен, права как в разделе «Права».
+1. Зарегистрируйте GitHub App одной командой: `PUBLIC_URL=https://ваш-сайт pnpm github-app:setup` (без `PUBLIC_URL` — для `http://localhost:5174`). Откроется GitHub с уже заполненной формой, останется нажать «Create GitHub App». Данные, включая приватный ключ приложения, сохранятся в `demo/github-app.json` (права 600, в `.gitignore`), затем перезапустите сервер. Приложение будет приватным, установить его сможете только вы; чтобы его могли ставить другие аккаунты и чужие организации, добавьте `COMENTA_GITHUB_APP_PUBLIC=1`.
+2. Вместо файла можно задать переменные окружения `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_ID` и `GITHUB_APP_PRIVATE_KEY` (текст .pem) или `GITHUB_APP_PRIVATE_KEY_PATH` (и `PUBLIC_URL`, если сервер стоит за прокси). Ключ создаётся на странице приложения: Private keys → Generate a private key. Без ключа всё тоже работает, но issues создаются от имени владельца и перестают приходить, когда его вход истекает. Регистрируете вручную: Callback URL `https://ваш-сайт/api/github/auth/callback`, включите «Request user authorization (OAuth) during installation», webhook выключен, права как в разделе «Права».
 3. Реализуйте маршруты, которые ждёт `<comenta-settings>` (пример — `demo/github.mjs`):
 
 | Маршрут | Что делает |
 |---|---|
-| `GET {endpoint}/status` | `{ oauth, pat, connected, app?, reason?: 'expired', account?, config?, missingScopes?, sync? }` |
+| `GET {endpoint}/status` | `{ oauth, pat, connected, app?, bot?, reason?: 'expired', syncing?, account?, config?, missingScopes?, sync? }` |
 | `GET {endpoint}/auth/login?return=` | редирект на GitHub (`authorizeUrl`, `state` в cookie) |
 | `GET {endpoint}/auth/callback` | проверка `state`, `exchangeCode`, токен и refresh-токен — в хранилище, браузеру — HttpOnly cookie. Если `countInstallations` вернул 0 — редирект на `installUrl` |
 | `GET {endpoint}/auth/install?return=` | редирект на `installUrl` (`state` в cookie): установка приложения и выбор репозиториев |
@@ -245,17 +245,20 @@ GitHub App регистрируется один раз, вами как авт�
 | `POST {endpoint}/auth/logout` | `revokeGrant` + удаление токена |
 | `GET {endpoint}/repos` | `{ items }` из `listInstallationRepos`, для токена — из `listRepos` (только где есть права на запись) |
 | `GET {endpoint}/projects?owner=` | `{ items }` из `listProjects` |
-| `PUT {endpoint}/config` | `{ repo: 'owner/name', projectId }` → `checkRepo` → `{ config }` |
+| `PUT {endpoint}/config` | `{ repo: 'owner/name', projectId }` → `checkRepo`, `installationId` репозитория из `listInstallationRepos` → `{ config }` |
 
 Ошибки — `{ error: { code, message } }`; `code: 'unauthorized'` компонент понимает как «войдите заново».
 
 4. В обработчике нового комментария вызовите `syncComment`:
 
 ```ts
-import { GitHubClient, GitHubError, syncComment } from '@comenta/feedback/github';
+import { GitHubAppAuth, GitHubClient, GitHubError, syncComment } from '@comenta/feedback/github';
 
-// токен пользователя живёт 8 часов: функция вызывается перед каждым запросом и обновляет его через refreshAccessToken
-const gh = new GitHubClient({ token: () => owner.freshToken() });
+// бот приложения: installation token (1 час) выпускается из приватного ключа и кэшируется
+const app = new GitHubAppAuth({ appId: process.env.GITHUB_APP_ID, privateKey: process.env.GITHUB_APP_PRIVATE_KEY });
+const gh = new GitHubClient({ token: async () => (await app.installationToken(config.installationId)).token });
+// без ключа — токен владельца (8 часов, обновляется через refreshAccessToken):
+// const gh = new GitHubClient({ token: () => owner.freshToken() });
 try {
   const issue = await syncComment(gh, { owner: 'acme', repo: 'site', projectId: owner.projectId }, payload, files, {
     checkExisting: attempt > 0, // на повторах искать уже созданный issue
@@ -263,6 +266,7 @@ try {
   comment.issue = issue; // { provider: 'github', repo, number, url, nodeId, projectId? }
 } catch (e) {
   if (e instanceof GitHubError && e.retryable) queueRetry(comment); // сеть, 5xx, rate limit (e.resetAt)
+  else if (e instanceof GitHubError && e.code === 'uninstalled') askToReinstall(); // приложение удалили на GitHub
   else if (e instanceof GitHubError && e.code === 'unauthorized') markTokenExpired(); // покажется «Войти заново»
   else reportToOwner(e.message); // нет прав, issues выключены…
 }
@@ -284,7 +288,7 @@ try {
 
 ### Права
 
-GitHub App просит только то, что нужно: Issues и Contents на запись (issues и загрузка записей), Metadata на чтение, Organization projects на запись (Projects v2 организаций). Токен работает только в репозиториях, выбранных при установке, и только там, где права есть и у самого пользователя; список меняется ссылкой «Изменить доступ к репозиториям на GitHub» в настройках. Issues создаются от имени владельца, с отметкой приложения. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
+GitHub App просит только то, что нужно: Issues и Contents на запись (issues и загрузка записей), Metadata на чтение, Organization projects на запись (Projects v2 организаций). Токен работает только в репозиториях, выбранных при установке, и только там, где права есть и у самого пользователя; список меняется ссылкой «Изменить доступ к репозиториям на GitHub» в настройках. Issues создаёт бот приложения (`<имя-приложения>[bot]`) installation-токеном, который сервер выпускает из приватного ключа; поэтому они продолжают приходить, даже когда вход владельца истёк. Без приватного ключа issues создаются от имени владельца, с отметкой приложения. Для токена: classic с `repo` + `project` или fine-grained с Issues, Contents и Projects: read & write.
 
 Токен пользователя живёт 8 часов и обновляется сам. Refresh-токен живёт 6 месяцев; если сервер столько не обращался к GitHub, настройки попросят войти заново.
 
@@ -294,7 +298,8 @@ GitHub App просит только то, что нужно: Issues и Contents
 |---|---|
 | Не вошёл | Кнопка «Войти через GitHub»; без GitHub App на сервере — форма для токена |
 | Приложение не установлено | После входа GitHub сразу предлагает установку и выбор репозиториев; если уйти с этой страницы, в настройках будет подсказка и ссылка на установку |
-| Токен истёк или отозван | Баннер «Доступ к GitHub истёк…», кнопка «Войти заново». Комментарии копятся в очереди и уходят после входа; выбранный репозиторий сохраняется |
+| Вход истёк или отозван | С ключом приложения: «Сессия входа в GitHub истекла. Комментарии по-прежнему создают issues…», войти нужно только чтобы менять настройки. Без ключа: баннер «Доступ к GitHub истёк…», комментарии копятся в очереди и уходят после входа. Выбранный репозиторий сохраняется |
+| Приложение удалено на GitHub | Комментарии копятся в очереди, в настройках ошибка и ссылка на установку; после повторной установки очередь уходит |
 | Не хватает прав | Предупреждение со списком прав; репозиторий без прав на запись или с выключенными issues не сохраняется, с понятной причиной |
 | Нет репозиториев / проектов | Подсказка вместо пустого списка; проект необязателен |
 | Сеть, 5xx | Безопасные запросы повторяются 3 раза с паузой; комментарий сохраняется у вас и уходит в GitHub позже (очередь с нарастающей паузой) |
@@ -307,7 +312,7 @@ GitHub App просит только то, что нужно: Issues и Contents
 pnpm demo:github    # тестовый GitHub на /__github: вход, репозитории, проекты, issues
 ```
 
-Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
+Откройте `http://localhost:5174/demo/settings.html`, войдите, выберите репозиторий и оставьте комментарий на `/`. Что создалось, видно на `/__github/state`. `COMENTA_GITHUB_BOT=0 pnpm demo:github` — то же без приватного ключа (issues от имени владельца); e2e в этом режиме: `COMENTA_GITHUB_BOT=0 pnpm test:e2e`. С настоящим GitHub: `pnpm github-app:setup`, затем `pnpm demo` (токены и настройки демо хранит в `demo/github.json`).
 
 ## Разработка
 

@@ -48,8 +48,8 @@ const server = createServer(async (req, res) => {
     });
     if (!r.ok) throw new Error(`GitHub ответил ${r.status}: ${await r.text()}`);
     const app = await r.json();
-    // ponytail: the private key isn't kept, user tokens don't need it; generate one on GitHub if a bot identity is ever added
-    await writeFile(file, JSON.stringify({ slug: app.slug, clientId: app.client_id, clientSecret: app.client_secret, htmlUrl: app.html_url }, null, 2), { mode: 0o600 });
+    // the private key mints installation tokens, so issues are authored by <slug>[bot]; the file is mode 600 and gitignored
+    await writeFile(file, JSON.stringify({ id: app.id, slug: app.slug, clientId: app.client_id, clientSecret: app.client_secret, privateKey: app.pem, htmlUrl: app.html_url }, null, 2), { mode: 0o600 });
     console.log(`GitHub App «${app.slug}» создан, данные сохранены в ${file}. Перезапустите сервер.`);
     page(res, 200, `<h1>GitHub App создан</h1><p>Перезапустите сервер и нажмите «Войти через GitHub» на <a href="${esc(site)}/demo/settings.html">странице настроек</a>.</p>`);
     server.close();

@@ -16,6 +16,8 @@ export interface GitHubRepo {
   htmlUrl: string;
   defaultBranch: string;
   pushedAt: string | null;
+  /** GitHub App installation that grants access (set by `listInstallationRepos`). */
+  installationId?: number;
 }
 
 export interface GitHubProject {
@@ -71,11 +73,15 @@ export async function listRepos(client: GitHubClient, opts: { maxPages?: number 
 export async function listInstallationRepos(client: GitHubClient, opts: { maxPages?: number } = {}): Promise<GitHubRepo[]> {
   const maxPages = opts.maxPages ?? 10;
   const installations = await client.paginate<{ id: number }>('/user/installations?per_page=100', maxPages, 'installations');
-  const lists = await Promise.all(installations.map((i) => client.paginate<RawRepo>(`/user/installations/${i.id}/repositories?per_page=100`, maxPages, 'repositories')));
+  const lists = await Promise.all(
+    installations.map(async (i) =>
+      (await client.paginate<RawRepo>(`/user/installations/${i.id}/repositories?per_page=100`, maxPages, 'repositories')).map((r) => ({ raw: r, installationId: i.id })),
+    ),
+  );
   return lists
     .flat()
-    .filter((r) => !r.archived)
-    .map(toRepo)
+    .filter(({ raw }) => !raw.archived)
+    .map(({ raw, installationId }) => ({ ...toRepo(raw), installationId }))
     .filter((r) => r.canPush)
     .sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
 }

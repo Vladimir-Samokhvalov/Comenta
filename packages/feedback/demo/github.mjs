@@ -6,6 +6,10 @@
 //                                             GitHub App; callback URL: {PUBLIC_URL}/api/github/auth/callback.
 //                                             Without them: GITHUB_APP_FILE (default demo/github-app.json),
 //                                             written by `pnpm github-app:setup`
+//   GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY (PEM text) or GITHUB_APP_PRIVATE_KEY_PATH
+//                                             the app's private key: issues are created with installation tokens
+//                                             and authored by <slug>[bot]. Without it: under the owner's user token.
+//                                             github-app.json from `pnpm github-app:setup` already has both.
 //   PUBLIC_URL                                 site origin for the callback (default: from the Host header)
 //   COMENTA_GITHUB_PAT=0|1                     accept a personal access token (default 1 unless NODE_ENV=production)
 //   COMENTA_GITHUB_OWNERS=login1,login2        who may connect (default: the first one to connect owns it)
@@ -13,13 +17,16 @@
 //   GITHUB_STORE                               where tokens and settings are kept (default demo/github.json, mode 600)
 //
 // Model: one site owner connects GitHub per space (site). The token stays here; the browser only
-// gets an HttpOnly session cookie. Guests' comments become issues under the owner's user token, which
-// reaches only the repositories chosen when the app was installed and is refreshed when it expires.
+// gets an HttpOnly session cookie. Guests' comments become issues authored by the app's bot (installation
+// token minted from the private key), so they keep arriving after the owner's sign-in expires; access ends
+// when the owner removes the app or the repository from it on GitHub. Without a private key the owner's
+// user token is used (same repositories, refreshed when it expires, issues authored by the owner).
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  GitHubAppAuth,
   GitHubClient,
   GitHubError,
   authorizeUrl,
@@ -54,6 +61,17 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
   const clientSecret = env.GITHUB_CLIENT_SECRET ?? appFile.clientSecret ?? '';
   const appSlug = env.GITHUB_APP_SLUG ?? appFile.slug ?? '';
   const oauth = !!(clientId && clientSecret && appSlug);
+  const appId = env.GITHUB_APP_ID ?? appFile.id ?? '';
+  let privateKey = env.GITHUB_APP_PRIVATE_KEY ?? appFile.privateKey ?? '';
+  if (!privateKey && env.GITHUB_APP_PRIVATE_KEY_PATH) {
+    try {
+      privateKey = readFileSync(env.GITHUB_APP_PRIVATE_KEY_PATH, 'utf8');
+    } catch (err) {
+      console.error(`[github] не удалось прочитать ${env.GITHUB_APP_PRIVATE_KEY_PATH}: ${err.message}`);
+    }
+  }
+  /** Installation tokens for the bot; null → issues go under the owner's user token. */
+  const appAuth = oauth && appId && privateKey ? new GitHubAppAuth({ appId, privateKey, apiUrl }) : null;
   const patAllowed = env.COMENTA_GITHUB_PAT ? env.COMENTA_GITHUB_PAT !== '0' : env.NODE_ENV !== 'production';
   const owners = (env.COMENTA_GITHUB_OWNERS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   const storeFile = env.GITHUB_STORE ?? join(root, 'demo', 'github.json');
@@ -92,12 +110,28 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     }
     return refreshing.get(integ);
   };
-  const client = (integ) => new GitHubClient({ token: () => accessToken(integ), apiUrl, retries: 3, retryDelayMs: Number(env.COMENTA_GITHUB_RETRY_MS ?? 500) });
+  const retryDelayMs = Number(env.COMENTA_GITHUB_RETRY_MS ?? 500);
+  const client = (integ) => new GitHubClient({ token: () => accessToken(integ), apiUrl, retries: 3, retryDelayMs });
+
+  /** Installation that covers the chosen repository when issues are created by the bot. */
+  const botInstallation = (integ) => (appAuth && integ?.tokenType === 'app' ? integ.config?.repo?.installationId ?? null : null);
+  const botClient = (id) => new GitHubClient({ token: async () => (await appAuth.installationToken(id)).token, apiUrl, retries: 3, retryDelayMs });
+  /** Comments can be synced: the bot needs only the saved settings, the user token must be alive. */
+  const canSync = (integ) => !!integ?.config && !integ.disconnected && (!!botInstallation(integ) || (!!integ.token && !integ.expired));
+  /** Which installation grants access to the chosen repository (it changes when the app is reinstalled). */
+  async function resolveInstallation(integ, items) {
+    if (!appAuth || integ.tokenType !== 'app' || !integ.config?.repo || !integ.token || integ.expired) return;
+    const repos = items ?? (await listInstallationRepos(client(integ)));
+    const id = repos.find((r) => r.fullName.toLowerCase() === integ.config.repo.fullName.toLowerCase())?.installationId;
+    if (id) integ.config.repo.installationId = id;
+    else delete integ.config.repo.installationId;
+    save();
+  }
 
   // ------------------------------------------------------------------ helpers
 
   const json = (res, status, data, headers = {}) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers }).end(JSON.stringify(data));
-  const STATUS = { unauthorized: 401, forbidden: 403, not_found: 404, rate_limited: 429, validation: 422, issues_disabled: 409, not_configured: 409, network: 502 };
+  const STATUS = { unauthorized: 401, forbidden: 403, not_found: 404, rate_limited: 429, validation: 422, issues_disabled: 409, not_configured: 409, uninstalled: 409, network: 502 };
   const fail = (res, err) => {
     const e = err instanceof GitHubError ? err : new GitHubError('network', 'Внутренняя ошибка сервера.');
     if (!(err instanceof GitHubError)) console.error(err);
@@ -158,15 +192,17 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     if (!integ?.token || !s) {
       const out = { ...base, connected: false };
       if (s && integ?.expired) out.reason = 'expired';
+      if (s && integ?.expired && canSync(integ)) out.syncing = true; // the bot keeps creating issues
       if (integ?.token && !s) out.owner = integ.account?.login;
       return out;
     }
-    if (integ.expired) return { ...base, connected: false, reason: 'expired' };
+    if (integ.expired) return { ...base, connected: false, reason: 'expired', ...(canSync(integ) ? { syncing: true } : {}) };
     const pending = Object.keys(integ.pending ?? {}).length;
     return {
       ...base,
       connected: true,
       app: integ.tokenType === 'app',
+      bot: !!botInstallation(integ),
       account: integ.account,
       config: integ.config ?? null,
       missingScopes: missingScopes(integ),
@@ -218,7 +254,9 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     repoCache.delete(space);
     save();
     log(`[github] подключён @${acc.login} (${tokenType}) в пространстве ${space}`);
-    void drain(space, true);
+    void resolveInstallation(db.spaces[space])
+      .catch(() => {})
+      .then(() => drain(space, true));
     return acc.login;
   }
 
@@ -232,7 +270,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     if (payload.issue) return payload.issue;
     const integ = db.spaces[space];
     if (!integ?.config || integ.disconnected) return null;
-    if (!integ.token || integ.expired) {
+    if (!canSync(integ)) {
       queue(integ, payload.id, null);
       return null;
     }
@@ -258,17 +296,28 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     if (inflight.has(key)) return inflight.get(key);
     const run = (async () => {
       const integ = db.spaces[space];
-      if (!integ?.config || !integ.token || integ.expired || payload.issue) return payload.issue ?? null;
+      if (!canSync(integ) || payload.issue) return payload.issue ?? null;
       const attempts = integ.pending?.[payload.id]?.attempts ?? 0;
       const { repo, project } = integ.config;
+      const bot = botInstallation(integ);
+      files ??= await filesFromDisk(payload);
+      const run = (gh, checkExisting) => syncComment(gh, { owner: repo.owner, repo: repo.name, projectId: project?.id }, payload, files, { checkExisting });
       try {
-        const res = await syncComment(
-          client(integ),
-          { owner: repo.owner, repo: repo.name, projectId: project?.id },
-          payload,
-          files ?? (await filesFromDisk(payload)),
-          { checkExisting: attempts > 0 },
-        );
+        let res;
+        if (!bot) res = await run(client(integ), attempts > 0);
+        else {
+          try {
+            res = await run(botClient(bot), attempts > 0);
+          } catch (err) {
+            // a cached installation token can die early; the app may have been reinstalled under a new id
+            if (!(err instanceof GitHubError) || !['unauthorized', 'uninstalled'].includes(err.code)) throw err;
+            appAuth.forget(bot);
+            if (err.code === 'uninstalled') await resolveInstallation(integ).catch(() => {});
+            const next = botInstallation(integ);
+            if (!next) throw err.code === 'uninstalled' ? err : new GitHubError('uninstalled', 'Приложение Comenta больше не установлено на этот репозиторий. Установите его снова в настройках.');
+            res = await run(botClient(next), true);
+          }
+        }
         payload.issue = { provider: 'github', repo: res.repo, number: res.number, url: res.url, nodeId: res.nodeId, ...(res.projectId ? { projectId: res.projectId } : {}) };
         persistComments();
         if (integ.pending) delete integ.pending[payload.id];
@@ -278,7 +327,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         return payload.issue;
       } catch (err) {
         const e = err instanceof GitHubError ? err : new GitHubError('network', String(err?.message ?? err));
-        if (e.code === 'unauthorized') markExpired(integ);
+        if (e.code === 'unauthorized' && !bot) markExpired(integ);
         integ.lastError = { code: e.code, message: e.message, at: new Date().toISOString() };
         queue(integ, payload.id, e);
         log(`[github] ${payload.id.slice(0, 8)}: ${e.code} — ${e.message} (повторим позже)`);
@@ -306,7 +355,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
   /** Retry queued comments of a space (`force`: ignore backoff, e.g. after re-login or new settings). */
   async function drain(space, force = false) {
     const integ = db.spaces[space];
-    if (!integ?.pending || !integ.config || !integ.token || integ.expired) return;
+    if (!integ?.pending || !canSync(integ)) return;
     for (const [id, p] of Object.entries(integ.pending)) {
       if (!force && p.nextAt > Date.now()) continue;
       const payload = findComment(space, id);
@@ -315,7 +364,7 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
         continue;
       }
       await syncOne(space, payload);
-      if (db.spaces[space]?.expired) break;
+      if (!canSync(db.spaces[space])) break;
     }
     save();
   }
@@ -458,8 +507,13 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
           project = projects.find((p) => p.id === body.projectId) ?? null;
           if (!project) return void json(res, 404, { error: { code: 'not_found', message: 'Проект не найден у владельца репозитория.' } });
         }
+        let installationId;
+        if (appAuth && integ.tokenType === 'app') {
+          const listed = await guard(() => listInstallationRepos(gh));
+          installationId = listed.find((r) => r.fullName === repo.fullName)?.installationId;
+        }
         integ.config = {
-          repo: { owner: repo.owner, name: repo.name, fullName: repo.fullName, htmlUrl: repo.htmlUrl },
+          repo: { owner: repo.owner, name: repo.name, fullName: repo.fullName, htmlUrl: repo.htmlUrl, ...(installationId ? { installationId } : {}) },
           project: project ? { id: project.id, title: project.title, number: project.number, url: project.url } : null,
         };
         delete integ.lastError;
@@ -476,5 +530,5 @@ export function createGitHubIntegration({ root, persistComments, findComment, up
     }
   }
 
-  return { oauth, handle, onComment, drain, status: (space) => db.spaces[space], close: () => clearInterval(timer) };
+  return { oauth, bot: !!appAuth, handle, onComment, drain, status: (space) => db.spaces[space], close: () => clearInterval(timer) };
 }

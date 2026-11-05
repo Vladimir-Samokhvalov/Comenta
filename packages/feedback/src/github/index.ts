@@ -8,6 +8,8 @@ export { GitHubError, rateLimitMessage } from './errors';
 export type { GitHubErrorCode } from './errors';
 export { authorizeUrl, installUrl, exchangeCode, refreshAccessToken, revokeGrant, getAccount } from './oauth';
 export type { OAuthAppOptions, TokenResult, GitHubAccount } from './oauth';
+export { GitHubAppAuth, createAppJwt, pkcs1ToPkcs8 } from './app';
+export type { GitHubAppCredentials, InstallationToken } from './app';
 export { listRepos, listInstallationRepos, countInstallations, checkRepo, listProjects } from './resources';
 export type { GitHubRepo, GitHubProject } from './resources';
 export { issueTitle, issueBody, attachmentCaption, formatDuration, neutralize, marker } from './issue';

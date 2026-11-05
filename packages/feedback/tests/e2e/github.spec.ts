@@ -5,6 +5,8 @@ import { widget } from './helpers';
 // Its state is global, so this file runs serially and resets it before every test
 // (with --repeat-each add --workers 1: copies of the file would share the mock).
 test.describe.configure({ mode: 'serial' });
+// COMENTA_GITHUB_BOT=0: the server has no private key and creates issues under the owner's user token
+const botMode = process.env.COMENTA_GITHUB_BOT !== '0';
 
 const s = (page: Page) => ({
   card: page.locator('comenta-settings .cs'),
@@ -25,12 +27,13 @@ const s = (page: Page) => ({
 });
 
 type State = {
-  issues: Array<{ repo: string; number: number; title: string; body: string; node_id: string }>;
+  issues: Array<{ repo: string; number: number; title: string; body: string; node_id: string; author: string }>;
   files: string[];
   branches: Record<string, string[]>;
   projectItems: Array<{ projectId: string; contentId: string }>;
   revoked: number;
   refreshes: number;
+  installationTokens: number;
 };
 const ghState = async (page: Page): Promise<State> => (await page.request.get('/__github/state')).json();
 const control = (page: Page, data: object) => page.request.post('/__github/control', { data });
@@ -329,7 +332,58 @@ test.describe('comments → GitHub issues', () => {
     await expect(page.locator('comenta-feedback .ph-issue')).toHaveText('GitHub #1');
   });
 
-  test('revoked token: settings ask to sign in again; queued comments are sent after it', async ({ page }) => {
+  test("issues are authored by the app's bot; one installation token serves several comments", async ({ page }) => {
+    test.skip(!botMode, 'needs the app private key');
+    await configure(page, 'demo-owner/landing', null);
+    await leaveComment(page, 'Первый');
+    await leaveComment(page, 'Второй');
+    const st = await ghState(page);
+    expect(st.issues.map((i) => [i.title, i.author])).toEqual([
+      ['Первый', 'comenta-mock[bot]'],
+      ['Второй', 'comenta-mock[bot]'],
+    ]);
+    expect(st.installationTokens).toBe(1);
+    const status = await (await page.request.get('/api/github/status', { headers: { 'X-Comenta-Space': space } })).json();
+    expect(status.bot).toBe(true);
+  });
+
+  test("owner's sign-in revoked: comments still become issues; settings ask to sign in to change them", async ({ page }) => {
+    test.skip(!botMode, 'needs the app private key');
+    await configure(page);
+    await control(page, { revokeUser: true });
+    await page.goto('/demo/settings.html');
+    await expect(s(page).notes.filter({ hasText: 'Сессия входа в GitHub истекла. Комментарии по-прежнему создают issues' })).toBeVisible();
+    await expect(s(page).login).toHaveText('Войти заново');
+    const res = await leaveComment(page, 'После отзыва входа');
+    expect(res.issue?.number).toBe(1);
+    expect((await ghState(page)).issues[0].author).toBe('comenta-mock[bot]');
+    await page.goto('/demo/settings.html');
+    await s(page).login.click();
+    await page.locator('#authorize').click();
+    await page.waitForURL(/settings\.html$/);
+    await expect(s(page).repo).toHaveValue('acme-studio/web-app');
+  });
+
+  test('app removed on GitHub: comments wait; installing it again sends them', async ({ page }) => {
+    test.skip(!botMode, 'needs the app private key');
+    await configure(page);
+    await control(page, { installed: false });
+    const res = await leaveComment(page, 'Пока приложение удалено');
+    expect(res.issue).toBeUndefined();
+    await page.waitForTimeout(1000); // longer than the retry queue tick
+    expect((await ghState(page)).issues).toHaveLength(0);
+    await page.goto('/demo/settings.html');
+    await expect(s(page).notes.filter({ hasText: 'больше не установлено' }).or(s(page).notes.filter({ hasText: 'удалено из GitHub' }))).toBeVisible();
+    // "Изменить доступ на GitHub" opens a new tab; follow it here
+    await page.goto('/api/github/auth/install?return=/demo/settings.html');
+    await expect(page).toHaveTitle(/Install/);
+    await page.locator('#install').click();
+    await page.waitForURL(/settings\.html$/);
+    await expect.poll(async () => (await ghState(page)).issues.map((i) => i.title), { timeout: 10_000 }).toEqual(['Пока приложение удалено']);
+  });
+
+  test('no private key: revoked token asks to sign in again; queued comments are sent after it', async ({ page }) => {
+    test.skip(botMode, 'user-token mode only');
     await configure(page);
     await control(page, { revoke: true });
     const res = await leaveComment(page, 'После отзыва токена');
@@ -340,9 +394,8 @@ test.describe('comments → GitHub issues', () => {
     await s(page).login.click();
     await page.locator('#authorize').click();
     await page.waitForURL(/settings\.html$/);
-    // the chosen repository is kept, and the queued comment goes out
     await expect(s(page).repo).toHaveValue('acme-studio/web-app');
-    await expect.poll(async () => (await ghState(page)).issues.map((i) => i.title), { timeout: 10_000 }).toEqual(['После отзыва токена']);
+    await expect.poll(async () => (await ghState(page)).issues.map((i) => [i.title, i.author]), { timeout: 10_000 }).toEqual([['После отзыва токена', 'demo-owner']]);
   });
 
   test('logout deletes the token: GitHub grant revoked, new comments stay local', async ({ page }) => {
