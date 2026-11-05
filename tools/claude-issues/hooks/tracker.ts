@@ -6,7 +6,8 @@ import type { Comment, Issue, Provider, Repo } from '../types'
 
 export type RunResult = { exitCode: number; stdout: string; stderr: string }
 /** Runs a command by argv; rejects when it cannot start (not installed). */
-export type Run = (argv: readonly string[]) => Promise<RunResult>
+export type RunInit = { stdin?: string; env?: Record<string, string>; timeoutMs?: number }
+export type Run = (argv: readonly string[], init?: RunInit) => Promise<RunResult>
 
 export class TrackerError extends Error {}
 
@@ -58,13 +59,26 @@ export function pickRemote(listing: string): string | undefined {
   return urls.get('origin') ?? urls.get('upstream') ?? urls.values().next().value
 }
 
-// ---------------------------------------------------------------- CLI
+// ---------------------------------------------------------------- access
+
+export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string }
+export type FetchResult = { status: number; ok: boolean; text: string }
+/** The host's own fetch (`$.http.fetch`). */
+export type Fetch = (url: string, init?: FetchInit) => Promise<FetchResult>
+/** What the tracker reaches the outside with. */
+export type Io = { run: Run; fetch: Fetch }
 
 const CANDIDATES: Record<Provider, string[]> = {
   github: ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh'],
   gitlab: ['glab', '/opt/homebrew/bin/glab', '/usr/local/bin/glab', '/usr/bin/glab'],
 }
 const CLI_NAME: Record<Provider, string> = { github: 'gh', gitlab: 'glab' }
+
+/**
+ * Tokens read from git's credential store, by host. Kept in the module only:
+ * never in the panel's state, never written anywhere.
+ */
+const gitTokens = new Map<string, string>()
 
 /**
  * Finds the CLI's executable. An app started from the Dock often has a short
@@ -92,12 +106,71 @@ async function isLoggedIn(run: Run, bin: string, host: string): Promise<boolean>
 }
 
 /**
- * Decides GitHub or GitLab for a remote host, and checks the CLI is signed
- * in there. github.com is GitHub; a host named like gitlab is GitLab; any
- * other host is whichever CLI is signed in to it.
+ * Asks git for the password it keeps for https://<host> (macOS keychain,
+ * Git Credential Manager, ...), the one `git push` over https uses.
+ * Never prompts: with nothing stored it answers undefined.
  */
-export async function connect(run: Run, remote: Remote): Promise<Repo> {
+export async function gitCredential(run: Run, host: string): Promise<string | undefined> {
+  try {
+    const r = await run(['git', 'credential', 'fill'], {
+      stdin: `protocol=https\nhost=${host}\n\n`,
+      env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: 'true', SSH_ASKPASS: 'true' },
+      timeoutMs: 15_000,
+    })
+    if (r.exitCode !== 0) return undefined
+    const line = r.stdout.split('\n').find(l => l.startsWith('password='))
+    const token = line?.slice('password='.length).trim()
+    return token || undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function apiBase(provider: Provider, host: string): string {
+  if (provider === 'gitlab') return `https://${host}/api/v4`
+  return host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+}
+
+function authHeaders(provider: Provider, token: string): Record<string, string> {
+  return provider === 'github'
+    ? {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      }
+    : { Authorization: `Bearer ${token}` }
+}
+
+/** For a host of unknown kind: which API answers to the token. */
+async function probe(io: Io, host: string, token: string): Promise<Provider | undefined> {
+  for (const [provider, endpoint] of [
+    ['gitlab', 'version'],
+    ['github', 'user'],
+  ] as const) {
+    try {
+      const r = await io.fetch(`${apiBase(provider, host)}/${endpoint}`, {
+        headers: authHeaders(provider, token),
+      })
+      if (r.ok) return provider
+    } catch {
+      // not this one
+    }
+  }
+  return undefined
+}
+
+const loginHint = (provider: Provider, host: string) =>
+  `${CLI_NAME[provider]} auth login${host === 'github.com' ? '' : ` --hostname ${host}`}`
+
+/**
+ * Decides GitHub or GitLab for a remote host and how to reach it.
+ * github.com is GitHub; a host named like gitlab is GitLab; any other host is
+ * whichever CLI is signed in to it. Without gh/glab (or signed out there) the
+ * login git keeps for the host is used, the one `git push` over https uses.
+ */
+export async function connect(io: Io, remote: Remote): Promise<Repo> {
   const { host, path } = remote
+  const webUrl = `https://${host}/${path}`
   const guess: Provider | undefined =
     host === 'github.com' || host.endsWith('.github.com')
       ? 'github'
@@ -105,56 +178,112 @@ export async function connect(run: Run, remote: Remote): Promise<Repo> {
         ? 'gitlab'
         : undefined
   const order: Provider[] = guess ? [guess] : ['github', 'gitlab']
-  const missing: Provider[] = []
+  let fallbackCli: { provider: Provider; bin: string } | undefined
   for (const provider of order) {
-    const bin = await findCli(run, provider)
-    if (!bin) {
-      missing.push(provider)
-      continue
+    const bin = await findCli(io.run, provider)
+    if (!bin) continue
+    if (await isLoggedIn(io.run, bin, host)) {
+      return { provider, host, path, via: 'cli', bin, webUrl }
     }
-    // A known host needs no `auth status` (it can fail where the API works,
-    // e.g. behind a proxy): a missing login shows up as the API's 401.
-    if (guess || (await isLoggedIn(run, bin, host))) {
-      return { provider, host, path, bin, webUrl: `https://${host}/${path}` }
+    // `auth status` can fail where the API works (behind a proxy, say):
+    // keep this CLI for a known host in case git has no login either.
+    if (guess) fallbackCli = { provider, bin }
+  }
+
+  const token = await gitCredential(io.run, host)
+  if (token) {
+    const provider = guess ?? (await probe(io, host, token))
+    if (provider) {
+      gitTokens.set(host, token)
+      return { provider, host, path, via: 'git', webUrl }
     }
   }
-  if (guess && missing.length) {
+  if (fallbackCli) return { ...fallbackCli, host, path, via: 'cli', webUrl }
+
+  if (guess) {
     throw new TrackerError(
-      `Не найден ${CLI_NAME[guess]}. Установите его и выполните ` +
-        `${CLI_NAME[guess]} auth login${host === 'github.com' ? '' : ` --hostname ${host}`}`,
+      `Нет входа в ${host}: не найден ${CLI_NAME[guess]}, и git не хранит пароль для https://${host}. ` +
+        `Выполните ${loginHint(guess, host)} или сделайте git pull по https с входом.`,
     )
   }
   throw new TrackerError(
-    `Не понял, GitHub это или GitLab: ${host}. Войдите в него через ` +
+    `Не понял, GitHub это или GitLab: ${host}. Войдите через ` +
       `gh auth login --hostname ${host} или glab auth login --hostname ${host}`,
   )
 }
 
+function authError(repo: Repo): TrackerError {
+  return repo.via === 'git'
+    ? new TrackerError(
+        `Сохранённый в git вход не подходит для API ${repo.host} (нужен токен, а не пароль). ` +
+          `Выполните ${loginHint(repo.provider, repo.host)}.`,
+      )
+    : new TrackerError(
+        `${CLI_NAME[repo.provider]} не вошёл в ${repo.host}. Выполните в терминале: ${loginHint(repo.provider, repo.host)}`,
+      )
+}
+
 async function api(
-  run: Run,
+  io: Io,
   repo: Repo,
   endpoint: string,
-  extra: readonly string[] = [],
+  method = 'GET',
+  fields: Record<string, string> = {},
 ): Promise<unknown> {
-  const argv = [repo.bin, 'api', '--hostname', repo.host, ...extra, endpoint]
-  let r: RunResult
-  try {
-    r = await run(argv)
-  } catch (err) {
-    throw new TrackerError(`${CLI_NAME[repo.provider]} не запустился: ${String(err)}`)
-  }
-  if (r.exitCode !== 0) {
-    const why = (r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ')
-    const cli = CLI_NAME[repo.provider]
-    if (/401|unauthori[sz]ed|bad credentials|auth login|not logged|no token/i.test(why)) {
-      throw new TrackerError(
-        `${cli} не вошёл в ${repo.host}. Выполните в терминале: ${cli} auth login` +
-          (repo.host === 'github.com' ? '' : ` --hostname ${repo.host}`),
-      )
+  let out: string
+  if (repo.via === 'git') {
+    const token = gitTokens.get(repo.host) ?? (await gitCredential(io.run, repo.host))
+    if (!token) throw authError(repo)
+    gitTokens.set(repo.host, token)
+    const hasBody = Object.keys(fields).length > 0
+    let r: FetchResult
+    try {
+      r = await io.fetch(`${apiBase(repo.provider, repo.host)}/${endpoint}`, {
+        method,
+        headers: {
+          ...authHeaders(repo.provider, token),
+          ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(hasBody ? { body: JSON.stringify(fields) } : {}),
+      })
+    } catch (err) {
+      throw new TrackerError(`Нет связи с ${repo.host}: ${String(err)}`)
     }
-    throw new TrackerError(why || `${cli} api: код ${r.exitCode}`)
+    if (r.status === 401) {
+      gitTokens.delete(repo.host)
+      throw authError(repo)
+    }
+    if (!r.ok) {
+      let why = ''
+      try {
+        why = String(JSON.parse(r.text)?.message ?? '')
+      } catch {
+        // not JSON
+      }
+      throw new TrackerError(`${repo.host}: HTTP ${r.status}${why ? ` ${why}` : ''}`)
+    }
+    out = r.text.trim()
+  } else {
+    const cli = CLI_NAME[repo.provider]
+    const argv = [repo.bin ?? cli, 'api', '--hostname', repo.host]
+    if (method !== 'GET') argv.push('-X', method)
+    for (const [k, v] of Object.entries(fields)) argv.push('-f', `${k}=${v}`)
+    argv.push(endpoint)
+    let r: RunResult
+    try {
+      r = await io.run(argv)
+    } catch (err) {
+      throw new TrackerError(`${cli} не запустился: ${String(err)}`)
+    }
+    if (r.exitCode !== 0) {
+      const why = (r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ')
+      if (/401|unauthori[sz]ed|bad credentials|auth login|not logged|no token/i.test(why)) {
+        throw authError(repo)
+      }
+      throw new TrackerError(why || `${cli} api: код ${r.exitCode}`)
+    }
+    out = r.stdout.trim()
   }
-  const out = r.stdout.trim()
   if (!out) return null
   try {
     return JSON.parse(out)
@@ -222,18 +351,18 @@ export function fromGitlabNote(raw: Json): Comment | undefined {
 // ---------------------------------------------------------------- calls
 
 /** Open and closed issues, most recently updated first, PRs/MRs left out. */
-export async function listIssues(run: Run, repo: Repo): Promise<Issue[]> {
+export async function listIssues(io: Io, repo: Repo): Promise<Issue[]> {
   const issues: Issue[] = []
   for (let page = 1; issues.length < MAX_ISSUES; page++) {
     const batch =
       repo.provider === 'github'
         ? await api(
-            run,
+            io,
             repo,
             `repos/${repo.path}/issues?state=all&sort=updated&direction=desc&per_page=${PAGE}&page=${page}`,
           )
         : await api(
-            run,
+            io,
             repo,
             `${gitlabProject(repo)}/issues?state=all&order_by=updated_at&sort=desc&per_page=${PAGE}&page=${page}`,
           )
@@ -247,13 +376,13 @@ export async function listIssues(run: Run, repo: Repo): Promise<Issue[]> {
   return issues.slice(0, MAX_ISSUES)
 }
 
-export async function listComments(run: Run, repo: Repo, number: number): Promise<Comment[]> {
+export async function listComments(io: Io, repo: Repo, number: number): Promise<Comment[]> {
   if (repo.provider === 'github') {
-    const raw = await api(run, repo, `repos/${repo.path}/issues/${number}/comments?per_page=100`)
+    const raw = await api(io, repo, `repos/${repo.path}/issues/${number}/comments?per_page=100`)
     return Array.isArray(raw) ? raw.map(fromGithubComment) : []
   }
   const raw = await api(
-    run,
+    io,
     repo,
     `${gitlabProject(repo)}/issues/${number}/notes?sort=asc&order_by=created_at&per_page=100`,
   )
@@ -262,23 +391,14 @@ export async function listComments(run: Run, repo: Repo, number: number): Promis
     : []
 }
 
-export async function closeIssue(run: Run, repo: Repo, number: number): Promise<void> {
+export async function closeIssue(io: Io, repo: Repo, number: number): Promise<void> {
   if (repo.provider === 'github') {
-    await api(run, repo, `repos/${repo.path}/issues/${number}`, [
-      '-X',
-      'PATCH',
-      '-f',
-      'state=closed',
-      '-f',
-      'state_reason=completed',
-    ])
+    await api(io, repo, `repos/${repo.path}/issues/${number}`, 'PATCH', {
+      state: 'closed',
+      state_reason: 'completed',
+    })
   } else {
-    await api(run, repo, `${gitlabProject(repo)}/issues/${number}`, [
-      '-X',
-      'PUT',
-      '-f',
-      'state_event=close',
-    ])
+    await api(io, repo, `${gitlabProject(repo)}/issues/${number}`, 'PUT', { state_event: 'close' })
   }
 }
 

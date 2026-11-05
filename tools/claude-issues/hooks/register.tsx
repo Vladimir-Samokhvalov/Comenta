@@ -12,7 +12,7 @@ import {
   listIssues,
   parseRemote,
   pickRemote,
-  type Run,
+  type Io,
 } from './tracker'
 
 const PANE = 'issues'
@@ -22,20 +22,28 @@ const REFRESH_MS = 5 * 60 * 1000
 // Change a tag when that value's fields change: what an earlier version
 // stored outlives a reload, and a new tag reads it as the initial value.
 const list = atom({ plugin: 'issues-panel', key: 'list' } as const, { status: 'idle', issues: [] } as IssuesList, {
-  shape: 'list-1',
+  shape: 'list-2',
 })
 const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as IssuesDetail | null, {
   shape: 'detail-1',
 })
 
+const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
+
+/** Opens the pane and notes whether the surface placed it. */
+async function openPane($: EngineInterface): Promise<void> {
+  const opened = await $.ui.open({ id: PANE, title: TITLE })
+  await update($, isPaneOpen, () => opened.isPlaced)
+}
+
 const setList = ($: EngineInterface, fn: (old: IssuesList) => IssuesList) => update($, list, fn)
 const setDetail = ($: EngineInterface, fn: (old: IssuesDetail | null) => IssuesDetail | null) =>
   update($, detail, fn)
 
-const runner =
-  ($: EngineInterface, cwd: string): Run =>
-  argv =>
-    $.process.run(argv, { cwd, timeoutMs: 60_000 })
+const runner = ($: EngineInterface, cwd: string): Io => ({
+  run: (argv, init) => $.process.run(argv, { cwd, timeoutMs: 60_000, ...init }),
+  fetch: (url, init) => $.http.fetch(url, init),
+})
 
 const message = (err: unknown) => (err instanceof TrackerError ? err.message : String(err))
 
@@ -54,7 +62,8 @@ async function load($: EngineInterface): Promise<void> {
   }))
   if (!sameFolder) await setDetail($, () => null)
 
-  const run = runner($, cwd)
+  const io = runner($, cwd)
+  const run = io.run
   try {
     let remotes
     try {
@@ -67,8 +76,8 @@ async function load($: EngineInterface): Promise<void> {
     if (!url) throw new TrackerError('У репозитория нет remote')
     const remote = parseRemote(url)
     if (!remote) throw new TrackerError(`Не понял адрес remote: ${url}`)
-    const repo = await connect(run, remote)
-    const issues = await listIssues(run, repo)
+    const repo = await connect(io, remote)
+    const issues = await listIssues(io, repo)
     await setList($, old =>
       old.cwd === cwd ? { status: 'ready', cwd, repo, issues, loadedAt: Date.now() } : old,
     )
@@ -133,7 +142,7 @@ export const register: Register = on => {
       name: 'issues',
       description: 'Показать issues GitHub/GitLab этого репозитория в панели',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
+    void openPane($)
     void load($)
     $.clock.every(REFRESH_MS, () => {
       void load($)
@@ -142,9 +151,34 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'issues' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
+    await openPane($)
     void load($)
     return { text: 'Панель issues открыта.' }
+  })
+
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
+    if (e.id === PANE) await update($, isPaneOpen, () => false)
+    return closed
+  })
+
+  // While the pane is closed, a thin row above the prompt brings it back.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await read($, isPaneOpen))) return next(e)
+    const state = await read($, list)
+    if (state.status === 'error' && !state.repo) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const open = state.issues.filter(i => i.state === 'open').length
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text dimColor>
+          Issues{state.repo ? ` · открытых: ${open}` : ''}
+        </Text>
+        <Button key="open-issues" dimColor onPress={() => openPane($)}>
+          Открыть
+        </Button>
+      </Box>
+    )
   })
 
   // The session moved to another folder: show that folder's repository.
