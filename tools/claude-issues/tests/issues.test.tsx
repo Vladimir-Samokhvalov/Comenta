@@ -280,14 +280,24 @@ test('without gh and without a git login, the panel says what to do', async ($, 
   await ui.unmount()
 })
 
-test('a button under the prompt opens the pane and hides it again', async ($, on) => {
-  // The first open is not placed (as when the person closed the pane):
-  // the row shows; its button opens the pane, and the row goes.
+test('the Issues button shows the pane and closes it: under the prompt on the terminal, above it on the desktop', async ($, on) => {
+  // The first open is not placed (as when the app took the pane away).
   let opens = 0
+  let closes = 0
+  let shown = false
   on('ui.open', () => {
     opens += 1
-    return opens > 1 ? { value: { isPlaced: true } } : { value: { isPlaced: false, reason: 'closed' } }
+    shown = opens > 1
+    return shown ? { value: { isPlaced: true } } : { value: { isPlaced: false, reason: 'closed' } }
   })
+  on('ui.close', () => {
+    closes += 1
+    shown = false
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({
+    value: shown ? [{ id: 'issues', title: 'Issues', isShown: true, isFocused: false, isPlaced: true }] : [],
+  }))
   on('session.cwd', () => ({ value: '/work/site' }))
   on('process.run', (_, e) => {
     if (e.argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
@@ -303,28 +313,69 @@ test('a button under the prompt opens the pane and hides it again', async ($, on
     return <Box />
   })
 
-  let closes = 0
-  on('ui.close', () => {
-    closes += 1
-    return { value: undefined }
-  })
-  const BAND = {
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(opens).toBe(1)
+
+  const HINT = {
     plugin: 'issues-panel',
     component: 'PromptHint',
     requestId: 'hint',
     props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
   } as const
+  const BAND = {
+    plugin: 'issues-panel',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: {
+      hasSurvey: false,
+      isWorking: false,
+      maxRows: 3,
+      bodyColumns: 80,
+      scroll: { offset: 0, bodyRows: 3 },
+      view: {},
+    },
+  } as const
 
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(opens).toBe(1)
+  // The desktop: in the band above the prompt, never in the hint line.
+  const hintOnDesktop = await $.ui.mount({ ...HINT, surface: 'desktop' })
+  expect(await hintOnDesktop.find({ key: 'toggle-issues' })).toBeUndefined()
+  await hintOnDesktop.unmount()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ key: 'toggle-issues' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /· 1/ })).toBeDefined()
   await band.press({ key: 'toggle-issues' })
   expect(opens).toBe(2)
   await band.press({ key: 'toggle-issues' })
   expect(closes).toBe(1)
+  expect(await band.find({ key: 'toggle-issues' })).toBeDefined()
   await band.unmount()
+
+  // The terminal: in the hint line, not in the band.
+  const bandOnTerminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await bandOnTerminal.find({ key: 'toggle-issues' })).toBeUndefined()
+  await bandOnTerminal.unmount()
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  await hint.press({ key: 'toggle-issues' })
+  expect(opens).toBe(3)
+  await hint.unmount()
+})
+
+test('/issues brings back a pane the app took off screen', async ($, on) => {
+  const calls: string[] = []
+  on('ui.panes', () => ({
+    value: [{ id: 'issues', title: 'Issues', isShown: false, isFocused: false, isPlaced: true }],
+  }))
+  on('ui.close', () => {
+    calls.push('close')
+    return { value: undefined }
+  })
+  on('ui.open', () => {
+    calls.push('open')
+    return { value: { isPlaced: true } }
+  })
+  on('session.cwd', () => ({ value: '/tmp' }))
+  on('process.run', () => fail('fatal: not a git repository'))
+  await $.command.run({ command: 'issues' } as Parameters<typeof $.command.run>[0])
+  expect(calls).toEqual(['close', 'open'])
 })
 
 test('a comment is written from the card, and description pictures are drawn', async ($, on) => {
