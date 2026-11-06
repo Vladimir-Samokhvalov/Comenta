@@ -446,20 +446,16 @@ export const register: Register = on => {
               rows={3}
               value={open.draft}
               placeholder="Написать комментарий…"
+              // The field's own button (the desktop draws it beside the field;
+              // the terminal hints Enter) sends: no second one.
               submitLabel="Отправить"
               onInput={value => setDetail($, d => (d?.number === issue.number ? { ...d, draft: value } : d))}
               onSubmit={value => sendComment($, issue.number, value)}
             />
-            <Box flexDirection="row" gap={1} alignItems="center">
-              <Button
-                key="send"
-                variant="primary"
-                onPress={async () => sendComment($, issue.number, (await read($, detail))?.draft ?? '')}
-              >
-                {open.isSending ? 'Отправляю…' : 'Отправить'}
-              </Button>
-              <Text dimColor>от имени {repo.via === 'cli' ? 'вашего входа в ' + (repo.provider === 'github' ? 'gh' : 'glab') : 'вашего входа в git'}</Text>
-            </Box>
+            <Text dimColor>
+              {open.isSending ? 'Отправляю… ' : ''}от имени{' '}
+              {repo.via === 'cli' ? 'вашего входа в ' + (repo.provider === 'github' ? 'gh' : 'glab') : 'вашего входа в git'}
+            </Text>
           </Box>
         </Box>
       )
