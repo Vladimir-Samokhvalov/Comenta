@@ -678,14 +678,12 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {shown.map(i => (
             <Box key={`card-${i.number}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-              {/* One press anywhere on the card: the meta line, then the title. */}
+              {/* The desktop draws a button's content as one line, so the meta line
+                  and the title are two buttons that both open the issue. */}
+              <Button key={`issue-meta-${i.number}`} plain dimColor onPress={() => openIssue($, i)}>
+                {`● #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}${i.comments ? ` · 💬 ${i.comments}` : ''}`}
+              </Button>
               <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
-                <Text dimColor wrap="truncate-end">
-                  <Text color="success">●</Text>
-                  {` #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}`}
-                  {i.comments ? ` · 💬 ${i.comments}` : ''}
-                </Text>
-                {'\n'}
                 <Text bold wrap="truncate-end">
                   {i.title}
                 </Text>
