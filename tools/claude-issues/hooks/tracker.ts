@@ -229,6 +229,7 @@ async function api(
   endpoint: string,
   method = 'GET',
   fields: Record<string, string> = {},
+  accept?: string,
 ): Promise<unknown> {
   let out: string
   if (repo.via === 'git') {
@@ -242,6 +243,7 @@ async function api(
         method,
         headers: {
           ...authHeaders(repo.provider, token),
+          ...(accept ? { Accept: accept } : {}),
           ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
         },
         ...(hasBody ? { body: JSON.stringify(fields) } : {}),
@@ -266,6 +268,7 @@ async function api(
   } else {
     const cli = CLI_NAME[repo.provider]
     const argv = [repo.bin ?? cli, 'api', '--hostname', repo.host]
+    if (accept) argv.push('-H', `Accept: ${accept}`)
     if (method !== 'GET') argv.push('-X', method)
     for (const [k, v] of Object.entries(fields)) argv.push('-f', `${k}=${v}`)
     argv.push(endpoint)
@@ -412,6 +415,10 @@ export async function closeIssue(io: Io, repo: Repo, number: number): Promise<vo
 export function cleanMarkdown(text: string): string {
   return text
     .replace(/<!--[\s\S]*?-->/g, '')
+    // Pictures are drawn under the text (Вложения), not as markup.
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/!\[[^\]]*\]\([^)\s]+(?:\s+"[^"]*")?\)/g, '')
+    .replace(/<\/?a\b[^>]*>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/?(?:sub|sup|small|span|div|p|details|summary|b|i|u|em|strong|kbd|ins|del|center|font)\b[^>]*>/gi, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -444,4 +451,168 @@ export function ago(iso: string, now: number): string {
   const mo = Math.round(d / 30)
   if (mo < 12) return `${mo} мес`
   return `${Math.round(mo / 12)} г`
+}
+
+// ---------------------------------------------------------------- comments
+
+export async function addComment(io: Io, repo: Repo, number: number, body: string): Promise<void> {
+  if (repo.provider === 'github') {
+    await api(io, repo, `repos/${repo.path}/issues/${number}/comments`, 'POST', { body })
+  } else {
+    await api(io, repo, `${gitlabProject(repo)}/issues/${number}/notes`, 'POST', { body })
+  }
+}
+
+// ---------------------------------------------------------------- attachments
+
+export type Attachment = { kind: 'image' | 'file'; name: string; url: string; fetchUrl: string }
+
+const decodeHtml = (text: string) =>
+  text.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+
+const FILE_LINK = /\/user-attachments\/files\/|\/uploads\/[0-9a-f]{16,}\/|comenta-attachments/i
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|heic|svg)(\?|#|$)/i
+
+function absolute(url: string, repo: Repo): string {
+  if (/^https?:\/\//i.test(url)) return url
+  if (url.startsWith('/uploads/')) return `${repo.webUrl}${url}`
+  if (url.startsWith('/')) return `https://${repo.host}${url}`
+  return `${repo.webUrl}/${url}`
+}
+
+/**
+ * The pictures and files an issue's description carries: markdown and HTML
+ * images, and links to uploaded files. `fetchUrl` is where the bytes are read
+ * (for GitHub, the signed address its rendered HTML hands out, so private
+ * repositories work too); `url` is the one to open in a browser.
+ */
+export function findAttachments(repo: Repo, body: string, bodyHtml?: string): Attachment[] {
+  const found: Attachment[] = []
+  const seen = new Set<string>()
+  const add = (a: Attachment) => {
+    if (seen.has(a.url)) return
+    seen.add(a.url)
+    found.push(a)
+  }
+  const signed: string[] = []
+  for (const m of (bodyHtml ?? '').matchAll(/<img\b[^>]*\bsrc="([^"]+)"/gi)) signed.push(decodeHtml(m[1]!))
+  const signedFor = (url: string) => {
+    const id = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(url)?.[1]
+    return (id && signed.find(s => s.includes(id))) || url
+  }
+  const image = (src: string, alt: string) => {
+    const url = absolute(decodeHtml(src), repo)
+    add({ kind: 'image', name: alt && alt !== 'Image' && alt !== 'image' ? alt : 'Картинка', url, fetchUrl: signedFor(url) })
+  }
+  for (const m of body.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0]
+    const src = /\bsrc="([^"]+)"/i.exec(tag)?.[1]
+    if (src) image(src, /\balt="([^"]*)"/i.exec(tag)?.[1] ?? '')
+  }
+  for (const m of body.matchAll(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) image(m[2]!, m[1]!)
+  for (const m of body.matchAll(/(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g)) {
+    const url = absolute(m[2]!, repo)
+    if (!FILE_LINK.test(url) || seen.has(url)) continue
+    if (IMAGE_EXT.test(url)) image(m[2]!, m[1]!)
+    else add({ kind: 'file', name: m[1]!, url, fetchUrl: url })
+  }
+  // A bare attachment address on its own line (GitHub's drag-and-drop video).
+  for (const m of body.matchAll(/^\s*(https:\/\/\S*\/user-attachments\/assets\/[0-9a-f-]{36})\s*$/gim)) {
+    add({ kind: 'file', name: 'Вложение', url: m[1]!, fetchUrl: m[1]! })
+  }
+  return found
+}
+
+/** The rendered HTML of a GitHub issue's description (signed image addresses). */
+export async function issueBodyHtml(io: Io, repo: Repo, number: number): Promise<string | undefined> {
+  if (repo.provider !== 'github') return undefined
+  const raw = (await api(io, repo, `repos/${repo.path}/issues/${number}`, 'GET', {}, 'application/vnd.github.full+json')) as
+    | { body_html?: string }
+    | null
+  return raw?.body_html ?? undefined
+}
+
+/** Svg source limit of the panel (131072), with room for the wrapper. */
+const MAX_BASE64 = 125_000
+
+// Downloads one picture and shrinks it to fit the panel's limit: sips on
+// macOS, ImageMagick elsewhere; prints "<mime> <width> <height>" then base64.
+const FETCH_IMAGE = `set -e
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+curl -fsSL --max-time 25 -o "$t/in" "$1"
+out="$t/in"
+if command -v sips >/dev/null 2>&1; then
+  m=$(sips -g pixelWidth -g pixelHeight "$t/in" 2>/dev/null | awk '/pixel(Width|Height)/{if($2>m)m=$2} END{print m+0}')
+  if [ "$m" -gt 0 ]; then
+    for z in 1100 850 650 480 360; do
+      [ "$z" -gt "$m" ] && z=$m
+      sips -Z "$z" -s format jpeg -s formatOptions 72 "$t/in" --out "$t/o.jpg" >/dev/null 2>&1 || break
+      out="$t/o.jpg"
+      [ "$(wc -c < "$out")" -le 92000 ] && break
+    done
+  fi
+elif command -v convert >/dev/null 2>&1; then
+  for z in 1100 850 650 480 360; do
+    convert "$t/in[0]" -resize "\${z}x\${z}>" -quality 72 "$t/o.jpg" 2>/dev/null || break
+    out="$t/o.jpg"
+    [ "$(wc -c < "$out")" -le 92000 ] && break
+  done
+fi
+if [ "$out" = "$t/o.jpg" ]; then
+  if command -v sips >/dev/null 2>&1; then
+    d=$(sips -g pixelWidth -g pixelHeight "$out" | awk '/pixelWidth/{w=$2} /pixelHeight/{h=$2} END{print w" "h}')
+  else
+    d=$(identify -format '%w %h' "$out" 2>/dev/null || echo "0 0")
+  fi
+  echo "image/jpeg $d"
+else
+  echo "raw 0 0"
+fi
+base64 < "$out" | tr -d '\\n'
+`
+
+function pngSize(base64: string): [number, number] | undefined {
+  try {
+    const head = atob(base64.slice(0, 44))
+    if (!head.startsWith('\x89PNG')) return undefined
+    const n = (i: number) =>
+      ((head.charCodeAt(i) << 24) | (head.charCodeAt(i + 1) << 16) | (head.charCodeAt(i + 2) << 8) | head.charCodeAt(i + 3)) >>> 0
+    return [n(16), n(20)]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * A picture as an SVG document the panel can draw (the bytes inlined, since
+ * a drawn SVG loads nothing from the network), or undefined when it cannot be
+ * read or does not fit.
+ */
+export async function imageAsSvg(io: Io, url: string): Promise<string | undefined> {
+  let r: RunResult
+  try {
+    r = await io.run(['sh', '-c', FETCH_IMAGE, 'sh', url], { timeoutMs: 60_000 })
+  } catch {
+    return undefined
+  }
+  if (r.exitCode !== 0) return undefined
+  const nl = r.stdout.indexOf('\n')
+  if (nl < 0) return undefined
+  const [kind, ws, hs] = r.stdout.slice(0, nl).trim().split(/\s+/)
+  const data = r.stdout.slice(nl + 1).trim()
+  if (!data || data.length > MAX_BASE64) return undefined
+  let mime = kind!
+  let w = Number(ws)
+  let h = Number(hs)
+  if (kind === 'raw') {
+    const size = pngSize(data)
+    if (!size) return undefined
+    mime = 'image/png'
+    ;[w, h] = size
+  }
+  if (!(w > 0 && h > 0)) return undefined
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">` +
+    `<image href="data:${mime};base64,${data}" width="${w}" height="${h}"/></svg>`
+  )
 }

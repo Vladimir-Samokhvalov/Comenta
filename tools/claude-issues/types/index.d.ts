@@ -50,6 +50,22 @@ export type IssuesDetail = {
   /** Asking "close this issue?" */
   isConfirmingClose: boolean
   isClosing: boolean
+  /** Pictures and files of the description; a picture's `svg` once read. */
+  attachments: IssuesAttachment[]
+  /** The comment being written, and whether it is being sent. */
+  draft: string
+  isSending: boolean
+  /** Bumped after a send, so the field starts empty. */
+  draftKey: number
+}
+
+export type IssuesAttachment = {
+  kind: 'image' | 'file'
+  name: string
+  url: string
+  status: 'loading' | 'ready' | 'failed'
+  /** The picture as an SVG document (bytes inlined), when it could be read. */
+  svg?: string
 }
 
 declare module 'claude-code' {
