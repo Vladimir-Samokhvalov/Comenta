@@ -340,12 +340,24 @@ test('the Issues button shows the pane and closes it: under the prompt on the te
   const hintOnDesktop = await $.ui.mount({ ...HINT, surface: 'desktop' })
   expect(await hintOnDesktop.find({ key: 'toggle-issues' })).toBeUndefined()
   await hintOnDesktop.unmount()
+  const footer = await $.ui.mount({
+    plugin: 'issues-panel',
+    component: 'SessionMode',
+    requestId: 'footer',
+    props: { modes: ['Auto'] },
+    surface: 'desktop',
+  })
+  await footer.press({ key: 'toggle-issues' })
+  expect(opens).toBe(2)
+  await footer.press({ key: 'toggle-issues' })
+  expect(closes).toBe(1)
+  await footer.unmount()
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: /· 1/ })).toBeDefined()
   await band.press({ key: 'toggle-issues' })
-  expect(opens).toBe(2)
+  expect(opens).toBe(3)
   await band.press({ key: 'toggle-issues' })
-  expect(closes).toBe(1)
+  expect(closes).toBe(2)
   expect(await band.find({ key: 'toggle-issues' })).toBeDefined()
   await band.unmount()
 
@@ -355,7 +367,7 @@ test('the Issues button shows the pane and closes it: under the prompt on the te
   await bandOnTerminal.unmount()
   const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
   await hint.press({ key: 'toggle-issues' })
-  expect(opens).toBe(3)
+  expect(opens).toBe(4)
   await hint.unmount()
 })
 

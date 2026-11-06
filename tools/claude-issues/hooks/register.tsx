@@ -291,6 +291,22 @@ export const register: Register = on => {
     )
   })
 
+  // The desktop's footer under the prompt (the labels at its right, beside
+  // the mode): the one place under the input the app hands to plugins.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    if (e.surface === 'terminal') return next(e)
+    const button = await issuesButton($, e)
+    if (!button) return next(e)
+    const { Box } = $.ui.resolve(e)
+    const engine = await next(e)
+    return (
+      <Box flexDirection="row" gap={2} alignItems="center">
+        {button}
+        {engine}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface === 'terminal' || e.props.hasSurvey) return next(e)
     const button = await issuesButton($, e)
