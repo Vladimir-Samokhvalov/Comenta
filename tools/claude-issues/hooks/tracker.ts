@@ -11,6 +11,17 @@ export type Run = (argv: readonly string[], init?: RunInit) => Promise<RunResult
 
 export class TrackerError extends Error {}
 
+/** No usable login for a host: the panel offers to save a token for it. */
+export class TokenNeeded extends TrackerError {
+  constructor(
+    text: string,
+    readonly host: string,
+    readonly provider?: Provider,
+  ) {
+    super(text)
+  }
+}
+
 /** How many issues are fetched at most (most recently updated first). */
 export const MAX_ISSUES = 300
 const PAGE = 100
@@ -190,7 +201,7 @@ export async function connect(io: Io, remote: Remote): Promise<Repo> {
     if (guess) fallbackCli = { provider, bin }
   }
 
-  const token = await gitCredential(io.run, host)
+  const token = gitTokens.get(host) ?? (await gitCredential(io.run, host))
   if (token) {
     const provider = guess ?? (await probe(io, host, token))
     if (provider) {
@@ -201,25 +212,74 @@ export async function connect(io: Io, remote: Remote): Promise<Repo> {
   if (fallbackCli) return { ...fallbackCli, host, path, via: 'cli', webUrl }
 
   if (guess) {
-    throw new TrackerError(
-      `Нет входа в ${host}: не найден ${CLI_NAME[guess]}, и git не хранит пароль для https://${host}. ` +
-        `Выполните ${loginHint(guess, host)} или сделайте git pull по https с входом.`,
+    throw new TokenNeeded(
+      `Нет входа в ${host}: не найден ${CLI_NAME[guess]}, и git не хранит для него токен. ` +
+        `Создайте токен и вставьте его ниже, или выполните ${loginHint(guess, host)}.`,
+      host,
+      guess,
     )
   }
-  throw new TrackerError(
-    `Не понял, GitHub это или GitLab: ${host}. Войдите через ` +
-      `gh auth login --hostname ${host} или glab auth login --hostname ${host}`,
+  throw new TokenNeeded(
+    `Нет входа в ${host}, и непонятно, GitHub это или GitLab. Создайте токен там, где лежит репозиторий, ` +
+      `и вставьте его ниже, или войдите через gh/glab auth login --hostname ${host}.`,
+    host,
   )
+}
+
+/** Where the person creates a token for the panel, its name and rights filled in. */
+export function tokenPage(provider: Provider, host: string): string {
+  return provider === 'github'
+    ? `https://${host}/settings/tokens/new?scopes=repo&description=Claude%20Issues`
+    : `https://${host}/-/user_settings/personal_access_tokens?name=Claude%20Issues&scopes=api`
+}
+
+/**
+ * Checks a pasted token against the host's API, then hands it to git's
+ * credential store (the macOS keychain, as git is set up), the same place
+ * `git credential fill` reads it from. Answers whether git kept it: where no
+ * credential helper is set, the token lasts for this session only.
+ */
+export async function saveToken(
+  io: Io,
+  host: string,
+  token: string,
+  provider?: Provider,
+): Promise<{ provider: Provider; isKept: boolean }> {
+  const clean = token.trim()
+  if (!clean || /\s/.test(clean)) throw new TrackerError('Вставьте токен целиком, без пробелов')
+  const found = await probe(io, host, clean)
+  if (!found || (provider && found !== provider)) {
+    throw new TrackerError(`${host} не принял этот токен. Проверьте, что он не истёк и у него есть права ${provider === 'github' ? 'repo' : 'api'}.`)
+  }
+  const username = found === 'github' ? 'x-access-token' : 'oauth2'
+  let isKept = false
+  try {
+    const r = await io.run(['git', 'credential', 'approve'], {
+      stdin: `protocol=https\nhost=${host}\nusername=${username}\npassword=${clean}\n\n`,
+      env: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      timeoutMs: 15_000,
+    })
+    isKept = r.exitCode === 0 && (await gitCredential(io.run, host)) === clean
+  } catch {
+    // git missing or the store refused: the token still works for now
+  }
+  gitTokens.set(host, clean)
+  return { provider: found, isKept }
 }
 
 function authError(repo: Repo): TrackerError {
   return repo.via === 'git'
-    ? new TrackerError(
+    ? new TokenNeeded(
         `Сохранённый в git вход не подходит для API ${repo.host} (нужен токен, а не пароль). ` +
-          `Выполните ${loginHint(repo.provider, repo.host)}.`,
+          `Создайте токен и вставьте его ниже, или выполните ${loginHint(repo.provider, repo.host)}.`,
+        repo.host,
+        repo.provider,
       )
-    : new TrackerError(
-        `${CLI_NAME[repo.provider]} не вошёл в ${repo.host}. Выполните в терминале: ${loginHint(repo.provider, repo.host)}`,
+    : new TokenNeeded(
+        `${CLI_NAME[repo.provider]} не вошёл в ${repo.host}. Создайте токен и вставьте его ниже, ` +
+          `или выполните в терминале: ${loginHint(repo.provider, repo.host)}`,
+        repo.host,
+        repo.provider,
       )
 }
 

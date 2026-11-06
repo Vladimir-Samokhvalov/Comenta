@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { IssuesDetail, IssuesIssue, IssuesList, IssuesRepo } from '../types'
 import {
+  TokenNeeded,
   TrackerError,
   addComment,
   ago,
@@ -20,6 +21,8 @@ import {
   listIssues,
   parseRemote,
   pickRemote,
+  saveToken,
+  tokenPage,
   type Io,
 } from './tracker'
 
@@ -30,7 +33,7 @@ const REFRESH_MS = 5 * 60 * 1000
 // Change a tag when that value's fields change: what an earlier version
 // stored outlives a reload, and a new tag reads it as the initial value.
 const list = atom({ plugin: 'issues-panel', key: 'list' } as const, { status: 'idle', issues: [] } as IssuesList, {
-  shape: 'list-2',
+  shape: 'list-3',
 })
 const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as IssuesDetail | null, {
   shape: 'detail-3',
@@ -125,6 +128,7 @@ async function load($: EngineInterface): Promise<void> {
     status: 'loading',
     cwd,
     error: undefined,
+    needsToken: undefined,
     ...(sameFolder ? {} : { repo: undefined, issues: [] }),
   }))
   if (!sameFolder) await setDetail($, () => null)
@@ -149,7 +153,33 @@ async function load($: EngineInterface): Promise<void> {
       old.cwd === cwd ? { status: 'ready', cwd, repo, issues, loadedAt: Date.now() } : old,
     )
   } catch (err) {
-    await setList($, old => (old.cwd === cwd ? { ...old, status: 'error', error: message(err) } : old))
+    const needsToken = err instanceof TokenNeeded ? { host: err.host, provider: err.provider } : undefined
+    await setList($, old =>
+      old.cwd === cwd ? { ...old, status: 'error', error: message(err), needsToken } : old,
+    )
+  }
+}
+
+/** Checks and stores a pasted token, then loads the list with it. */
+async function submitToken($: EngineInterface, token: string): Promise<void> {
+  const state = await read($, list)
+  const need = state.needsToken
+  if (!need || !state.cwd || state.isSavingToken || !token.trim()) return
+  await setList($, old => ({ ...old, isSavingToken: true }))
+  try {
+    const { isKept } = await saveToken(runner($, state.cwd), need.host, token, need.provider)
+    await setList($, old => ({ ...old, isSavingToken: false }))
+    await load($)
+    if (!isKept) {
+      $.ui.toast('Токен работает, но git не сохранил его: после перезапуска его придётся вставить снова.')
+    }
+  } catch (err) {
+    await setList($, old => ({
+      ...old,
+      isSavingToken: false,
+      error: message(err),
+      tokenKey: (old.tokenKey ?? 0) + 1,
+    }))
   }
 }
 
@@ -617,6 +647,32 @@ export const register: Register = on => {
           </Button>
         </Box>
         {state.status === 'error' && <Text color="error">{state.error}</Text>}
+        {state.status === 'error' && state.needsToken && (
+          <Box flexDirection="column" gap={1}>
+            <Text>1. Создайте токен (название и права уже заполнены):</Text>
+            <Box flexDirection="row" gap={2} flexWrap="wrap">
+              {(state.needsToken.provider ? [state.needsToken.provider] : (['gitlab', 'github'] as const)).map(p => (
+                <Link
+                  key={`token-page-${p}`}
+                  href={tokenPage(p, state.needsToken!.host)}
+                  label={`Создать токен в ${p === 'github' ? 'GitHub' : 'GitLab'} ↗`}
+                />
+              ))}
+            </Box>
+            <Text>2. Вставьте его сюда:</Text>
+            <Input
+              key={`token-${state.tokenKey ?? 0}`}
+              placeholder="Токен"
+              submitLabel="Сохранить"
+              onSubmit={value => submitToken($, value)}
+            />
+            <Text dimColor>
+              {state.isSavingToken
+                ? 'Проверяю токен…'
+                : 'Токен проверяется и сохраняется через git в связку ключей этого компьютера, больше никуда.'}
+            </Text>
+          </Box>
+        )}
         {state.status === 'loading' && shown.length === 0 && <Text dimColor>Загружаю…</Text>}
         {state.status === 'ready' && shown.length === 0 && <Text dimColor>Открытых issues нет</Text>}
         <Box flexDirection="column" gap={1}>
