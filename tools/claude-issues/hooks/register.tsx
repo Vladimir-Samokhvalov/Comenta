@@ -351,13 +351,27 @@ export const register: Register = on => {
     const issue = open && state.issues.find(i => i.number === open.number)
 
     if (open && issue && repo) {
-      const kind = repo.provider === 'github' ? 'GitHub' : 'GitLab'
       return (
         <Box flexDirection="column" gap={1}>
-          <Box flexDirection="row" gap={1}>
-            <Button key="back" onPress={() => setDetail($, () => null)}>
-              ← Назад
-            </Button>
+          {/* The actions on top; the tracker's page behind a link icon at the right. */}
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              <Button key="back" onPress={() => setDetail($, () => null)}>
+                ← Назад
+              </Button>
+              <Button key="insert" variant="primary" onPress={() => insert($, issue)}>
+                Вставить в чат
+              </Button>
+              {issue.state === 'open' && !open.isConfirmingClose && (
+                <Button
+                  key="close"
+                  onPress={() => setDetail($, d => (d ? { ...d, isConfirmingClose: true } : d))}
+                >
+                  Закрыть issue
+                </Button>
+              )}
+            </Box>
+            <Link href={issue.url} label="🔗" />
           </Box>
           <Box flexDirection="column">
             <Text bold wrap="wrap">
@@ -370,20 +384,6 @@ export const register: Register = on => {
               {` · ${issue.author} · ${ago(issue.updatedAt, now)}`}
               {issue.labels.length ? ` · ${issue.labels.join(', ')}` : ''}
             </Text>
-          </Box>
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Link href={issue.url} label={`Открыть в ${kind}`} />
-            <Button key="insert" variant="primary" onPress={() => insert($, issue)}>
-              Вставить в чат
-            </Button>
-            {issue.state === 'open' && !open.isConfirmingClose && (
-              <Button
-                key="close"
-                onPress={() => setDetail($, d => (d ? { ...d, isConfirmingClose: true } : d))}
-              >
-                Закрыть issue
-              </Button>
-            )}
           </Box>
           {open.isConfirmingClose && (
             <Box flexDirection="row" gap={1} alignItems="center">
