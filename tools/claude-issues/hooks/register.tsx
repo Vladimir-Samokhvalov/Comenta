@@ -240,21 +240,27 @@ export const register: Register = on => {
     return closed
   })
 
-  // While the pane is closed, a thin row above the prompt brings it back.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || (await read($, isPaneOpen))) return next(e)
+  // A button in the hint line under the prompt opens the pane (or hides it),
+  // beside what the engine draws there.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const state = await read($, list)
     if (state.status === 'error' && !state.repo) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const isOpen = await read($, isPaneOpen)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const open = state.issues.filter(i => i.state === 'open').length
+    const engine = await next(e)
     return (
-      <Box flexDirection="row" gap={1} alignItems="center">
-        <Text dimColor>
-          Issues{state.repo ? ` · открытых: ${open}` : ''}
-        </Text>
-        <Button key="open-issues" dimColor onPress={() => openPane($)}>
-          Открыть
+      <Box flexDirection="row" gap={2} alignItems="center">
+        <Button
+          key="toggle-issues"
+          plain
+          dimColor={!isOpen}
+          onPress={() => (isOpen ? $.ui.close({ id: PANE }) : openPane($))}
+        >
+          {'📋 Issues'}
+          {state.repo ? <Text dimColor> · {open}</Text> : ''}
         </Button>
+        {engine}
       </Box>
     )
   })
