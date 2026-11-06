@@ -61,6 +61,11 @@ async function togglePane($: EngineInterface): Promise<void> {
 /** A translucent grey that reads on light and dark themes alike. */
 const HOVER_BACKING = 'rgba(128, 128, 128, 0.18)'
 
+/** The tracker's own list of the repository's issues. */
+function issuesPage(repo: IssuesRepo): string {
+  return repo.provider === 'github' ? `${repo.webUrl}/issues` : `${repo.webUrl}/-/issues`
+}
+
 type ResolveInput = Parameters<EngineInterface['ui']['resolve']>[0]
 
 /** The Issues button, or nothing where this folder has no repository. */
@@ -472,9 +477,10 @@ export const register: Register = on => {
               <Text dimColor>{state.cwd ?? 'Репозиторий'}</Text>
             )}
             {repo && (
-              <Text dimColor>
-                {repo.provider === 'github' ? 'GitHub' : 'GitLab'} · открытых: {shown.length}
-              </Text>
+              <Box flexDirection="row">
+                <Link href={issuesPage(repo)} label={repo.provider === 'github' ? 'GitHub' : 'GitLab'} />
+                <Text dimColor> · открытых: {shown.length}</Text>
+              </Box>
             )}
           </Box>
           <Button key="refresh" dimColor onPress={() => load($)}>
