@@ -90,6 +90,8 @@ declare module 'claude-code' {
       /** Whether the Issues pane is up; the row above the prompt shows while it is not. */
       isPaneOpen: boolean
       folded: Shaped<{ open: boolean; closed: boolean }>
+      /** The issues ticked in the list, and whether the bar's action is running. */
+      selection: Shaped<{ numbers: number[]; isBusy: boolean }>
     }
   }
 }

@@ -478,6 +478,14 @@ export async function closeIssue(io: Io, repo: Repo, number: number): Promise<vo
   }
 }
 
+export async function reopenIssue(io: Io, repo: Repo, number: number): Promise<void> {
+  if (repo.provider === 'github') {
+    await api(io, repo, `repos/${repo.path}/issues/${number}`, 'PATCH', { state: 'open' })
+  } else {
+    await api(io, repo, `${gitlabProject(repo)}/issues/${number}`, 'PUT', { state_event: 'reopen' })
+  }
+}
+
 // ---------------------------------------------------------------- text
 
 /**

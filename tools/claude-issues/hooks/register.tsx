@@ -11,6 +11,7 @@ import {
   imageAsSvg,
   issueBodyHtml,
   closeIssue,
+  reopenIssue,
   connect,
   currentLogin,
   deleteComment,
@@ -46,6 +47,57 @@ const folded = atom({ plugin: 'issues-panel', key: 'folded' } as const, { open: 
 
 const toggleGroup = ($: EngineInterface, group: 'open' | 'closed') =>
   update($, folded, old => ({ ...old, [group]: !old[group] }))
+
+/** The issues ticked in the list (the Threads-like selection bar acts on them). */
+const selection = atom(
+  { plugin: 'issues-panel', key: 'selection' } as const,
+  { numbers: [] as number[], isBusy: false },
+  { shape: 'selection-1' },
+)
+
+const toggleSelected = ($: EngineInterface, number: number) =>
+  update($, selection, old => ({
+    ...old,
+    numbers: old.numbers.includes(number) ? old.numbers.filter(n => n !== number) : [...old.numbers, number],
+  }))
+
+const clearSelection = ($: EngineInterface) => update($, selection, () => ({ numbers: [], isBusy: false }))
+
+/** Closes (or reopens) every ticked issue of that state, then clears the selection. */
+async function setSelectedState($: EngineInterface, to: 'closed' | 'open'): Promise<void> {
+  const state = await read($, list)
+  const sel = await read($, selection)
+  if (!state.repo || !state.cwd || sel.isBusy) return
+  const numbers = state.issues
+    .filter(i => sel.numbers.includes(i.number) && i.state !== to)
+    .map(i => i.number)
+  if (numbers.length === 0) return
+  await update($, selection, old => ({ ...old, isBusy: true }))
+  const io = runner($, state.cwd)
+  const done: number[] = []
+  let failure: unknown
+  for (const number of numbers) {
+    try {
+      await (to === 'closed' ? closeIssue : reopenIssue)(io, state.repo, number)
+      done.push(number)
+    } catch (err) {
+      failure = err
+      break
+    }
+  }
+  const at = new Date().toISOString()
+  await setList($, old => ({
+    ...old,
+    issues: old.issues.map(i => (done.includes(i.number) ? { ...i, state: to, updatedAt: at } : i)),
+  }))
+  await update($, selection, old => ({
+    numbers: failure ? old.numbers.filter(n => !done.includes(n)) : old.numbers.filter(n => !numbers.includes(n)),
+    isBusy: false,
+  }))
+  const verb = to === 'closed' ? 'Закрыто' : 'Открыто заново'
+  if (done.length) $.ui.toast(`${verb}: ${done.map(n => `#${n}`).join(', ')}`)
+  if (failure) $.ui.toast(`Не получилось: ${message(failure)}`)
+}
 
 const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
 
@@ -637,25 +689,49 @@ export const register: Register = on => {
       .filter(i => i.state === 'closed')
       .sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt))
     const fold = await read($, folded)
-    // Rows like the Threads list: a status mark, the title (opens the card),
-    // and how long ago it changed on the right.
-    const row = (i: IssuesIssue) => (
-      <Box key={`row-${i.number}`} flexDirection="row" gap={1} alignItems="center">
-        <Text color={i.state === 'open' ? 'success' : 'merged'}>{i.state === 'open' ? '○' : '✓'}</Text>
-        <Box flexGrow={1} flexShrink={1}>
-          <Button
-            key={`issue-${i.number}`}
-            plain
-            dimColor={i.state === 'closed'}
-            hover={{ backgroundColor: HOVER_BACKING }}
-            onPress={() => openIssue($, i)}
-          >
-            <Text wrap="truncate-end">{i.title}</Text>
-          </Button>
+    const sel = await read($, selection)
+    const picked = state.issues.filter(i => sel.numbers.includes(i.number))
+    // Rows like the Threads list: a status mark that turns into a checkbox
+    // under the pointer, the title (opens the card), and how long ago it
+    // changed on the right; the whole row is backed while hovered or ticked.
+    const row = (i: IssuesIssue) => {
+      const isPicked = sel.numbers.includes(i.number)
+      return (
+        <Box
+          key={`row-${i.number}`}
+          flexDirection="row"
+          gap={1}
+          paddingX={1}
+          alignItems="center"
+          backgroundColor={isPicked ? HOVER_BACKING : undefined}
+          hover={{ backgroundColor: HOVER_BACKING }}
+        >
+          {isPicked ? (
+            <Button key={`check-${i.number}`} plain onPress={() => toggleSelected($, i.number)}>
+              {'☑'}
+            </Button>
+          ) : (
+            <Box>
+              {/* The mark fades under the pointer and the checkbox drawn over it shows. */}
+              <Text color={i.state === 'open' ? 'success' : 'merged'} hover={{ color: 'rgba(0, 0, 0, 0)' }}>
+                {i.state === 'open' ? '○' : '✓'}
+              </Text>
+              <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
+                <Button key={`check-${i.number}`} plain onPress={() => toggleSelected($, i.number)}>
+                  {'☐'}
+                </Button>
+              </Box>
+            </Box>
+          )}
+          <Box flexGrow={1} flexShrink={1}>
+            <Button key={`issue-${i.number}`} plain dimColor={i.state === 'closed'} onPress={() => openIssue($, i)}>
+              <Text wrap="truncate-end">{i.title}</Text>
+            </Button>
+          </Box>
+          <Text dimColor>{ago(i.updatedAt, now)}</Text>
         </Box>
-        <Text dimColor>{ago(i.updatedAt, now)}</Text>
-      </Box>
-    )
+      )
+    }
     const group = (key: 'open' | 'closed', title: string, issues: IssuesIssue[]) => (
       <Box key={`group-${key}`} flexDirection="column">
         <Button
@@ -717,6 +793,33 @@ export const register: Register = on => {
           <Box flexDirection="column" gap={1}>
             {group('open', 'Открытые', openIssues)}
             {group('closed', 'Закрытые', closedIssues)}
+          </Box>
+        )}
+        {picked.length > 0 && (
+          <Box
+            key="selection-bar"
+            flexDirection="row"
+            gap={2}
+            alignItems="center"
+            alignSelf="center"
+            paddingX={2}
+            borderStyle="round"
+            backgroundColor="#2b2b2b"
+          >
+            <Text color="#bdbdbd">{sel.isBusy ? 'Выполняю…' : `${picked.length} выбрано`}</Text>
+            {picked.some(i => i.state === 'open') && (
+              <Button key="selection-close" plain onPress={() => setSelectedState($, 'closed')}>
+                <Text color="#ffffff">✓ Закрыть</Text>
+              </Button>
+            )}
+            {picked.some(i => i.state === 'closed') && (
+              <Button key="selection-reopen" plain onPress={() => setSelectedState($, 'open')}>
+                <Text color="#ffffff">↺ Открыть заново</Text>
+              </Button>
+            )}
+            <Button key="selection-clear" plain onPress={() => clearSelection($)}>
+              <Text color="#ffffff">✕</Text>
+            </Button>
           </Box>
         )}
       </Box>
