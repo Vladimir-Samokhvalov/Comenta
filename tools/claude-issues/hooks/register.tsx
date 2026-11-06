@@ -67,6 +67,13 @@ async function issuesButton($: EngineInterface, e: ResolveInput) {
   const isOpen = await read($, isPaneOpen)
   const { Button, Text } = $.ui.resolve(e)
   const open = state.issues.filter(i => i.state === 'open').length
+  const label = state.repo ? `Issues · ${open}` : 'Issues'
+  // The desktop's own button, as the model and mode beside it are drawn.
+  if (e.surface !== 'terminal') {
+    return (
+      <Button key="toggle-issues" variant="secondary" label={label} onPress={() => togglePane($)} />
+    )
+  }
   return (
     <Button key="toggle-issues" plain dimColor={!isOpen} onPress={() => togglePane($)}>
       {'Issues'}
@@ -305,14 +312,6 @@ export const register: Register = on => {
         {engine}
       </Box>
     )
-  })
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.surface === 'terminal' || e.props.hasSurvey) return next(e)
-    const button = await issuesButton($, e)
-    if (!button) return next(e)
-    const { Box } = $.ui.resolve(e)
-    return <Box flexDirection="row">{button}</Box>
   })
 
   // The session moved to another folder: show that folder's repository.
