@@ -472,14 +472,15 @@ export const register: Register = on => {
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
           <Box flexDirection="column" flexShrink={1}>
             {repo ? (
-              <Link href={issuesPage(repo)} label={repo.path} />
+              <Text>{repo.path}</Text>
             ) : (
               <Text dimColor>{state.cwd ?? 'Репозиторий'}</Text>
             )}
             {repo && (
-              <Text dimColor>
-                {repo.provider === 'github' ? 'GitHub' : 'GitLab'} · открытых: {shown.length}
-              </Text>
+              <Box flexDirection="row">
+                <Link href={issuesPage(repo)} label={repo.provider === 'github' ? 'GitHub' : 'GitLab'} />
+                <Text dimColor> · открытых: {shown.length}</Text>
+              </Box>
             )}
           </Box>
           <Button key="refresh" dimColor onPress={() => load($)}>
