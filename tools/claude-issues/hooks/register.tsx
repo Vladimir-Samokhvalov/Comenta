@@ -371,7 +371,7 @@ export const register: Register = on => {
                 </Button>
               )}
             </Box>
-            <Link href={issue.url} label="🔗" />
+            <Link href={issue.url} label="↗" />
           </Box>
           <Box flexDirection="column">
             <Text bold wrap="wrap">
