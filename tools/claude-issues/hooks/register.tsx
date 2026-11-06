@@ -41,6 +41,40 @@ async function openPane($: EngineInterface): Promise<void> {
   await update($, isPaneOpen, () => opened.isPlaced)
 }
 
+/**
+ * Brings the pane up even where the app took it off screen without closing
+ * it (the engine then still counts it open, and a plain open does nothing).
+ */
+async function showPane($: EngineInterface): Promise<void> {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane && !pane.isShown) await $.ui.close({ id: PANE })
+  await openPane($)
+}
+
+/** The Issues button: shows the pane, or closes it while it is on screen. */
+async function togglePane($: EngineInterface): Promise<void> {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (pane?.isShown) await $.ui.close({ id: PANE })
+  else await showPane($)
+}
+
+type ResolveInput = Parameters<EngineInterface['ui']['resolve']>[0]
+
+/** The Issues button, or nothing where this folder has no repository. */
+async function issuesButton($: EngineInterface, e: ResolveInput) {
+  const state = await read($, list)
+  if (state.status === 'error' && !state.repo) return undefined
+  const isOpen = await read($, isPaneOpen)
+  const { Button, Text } = $.ui.resolve(e)
+  const open = state.issues.filter(i => i.state === 'open').length
+  return (
+    <Button key="toggle-issues" plain dimColor={!isOpen} onPress={() => togglePane($)}>
+      {'📋 Issues'}
+      {state.repo ? <Text dimColor> · {open}</Text> : ''}
+    </Button>
+  )
+}
+
 const setList = ($: EngineInterface, fn: (old: IssuesList) => IssuesList) => update($, list, fn)
 const setDetail = ($: EngineInterface, fn: (old: IssuesDetail | null) => IssuesDetail | null) =>
   update($, detail, fn)
@@ -229,8 +263,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'issues' }, async $ => {
-    await openPane($)
-    void load($)
+    await showPane($)
+    await load($)
     return { text: 'Панель issues открыта.' }
   })
 
@@ -240,29 +274,29 @@ export const register: Register = on => {
     return closed
   })
 
-  // A button in the hint line under the prompt opens the pane (or hides it),
-  // beside what the engine draws there.
+  // The Issues button. The terminal draws it in the hint line under the
+  // prompt; the desktop app draws no plugin tree there, so it gets the band
+  // just above the prompt instead, always shown.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const state = await read($, list)
-    if (state.status === 'error' && !state.repo) return next(e)
-    const isOpen = await read($, isPaneOpen)
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const open = state.issues.filter(i => i.state === 'open').length
+    if (e.surface !== 'terminal') return next(e)
+    const button = await issuesButton($, e)
+    if (!button) return next(e)
+    const { Box } = $.ui.resolve(e)
     const engine = await next(e)
     return (
       <Box flexDirection="row" gap={2} alignItems="center">
-        <Button
-          key="toggle-issues"
-          plain
-          dimColor={!isOpen}
-          onPress={() => (isOpen ? $.ui.close({ id: PANE }) : openPane($))}
-        >
-          {'📋 Issues'}
-          {state.repo ? <Text dimColor> · {open}</Text> : ''}
-        </Button>
+        {button}
         {engine}
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface === 'terminal' || e.props.hasSurvey) return next(e)
+    const button = await issuesButton($, e)
+    if (!button) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box flexDirection="row">{button}</Box>
   })
 
   // The session moved to another folder: show that folder's repository.
