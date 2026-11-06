@@ -39,6 +39,14 @@ const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as 
   shape: 'detail-3',
 })
 
+/** Which list groups are folded: «Закрытые» starts folded, like Resolved in Threads. */
+const folded = atom({ plugin: 'issues-panel', key: 'folded' } as const, { open: false, closed: true }, {
+  shape: 'folded-1',
+})
+
+const toggleGroup = ($: EngineInterface, group: 'open' | 'closed') =>
+  update($, folded, old => ({ ...old, [group]: !old[group] }))
+
 const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
 
 /** Opens the pane and notes whether the surface placed it. */
@@ -624,8 +632,44 @@ export const register: Register = on => {
       )
     }
 
-    // Closed issues are not listed (one closed here stays in its card until Назад).
-    const shown = state.issues.filter(i => i.state === 'open')
+    const openIssues = state.issues.filter(i => i.state === 'open')
+    const closedIssues = state.issues
+      .filter(i => i.state === 'closed')
+      .sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt))
+    const fold = await read($, folded)
+    // Rows like the Threads list: a status mark, the title (opens the card),
+    // and how long ago it changed on the right.
+    const row = (i: IssuesIssue) => (
+      <Box key={`row-${i.number}`} flexDirection="row" gap={1} alignItems="center">
+        <Text color={i.state === 'open' ? 'success' : 'merged'}>{i.state === 'open' ? '○' : '✓'}</Text>
+        <Box flexGrow={1} flexShrink={1}>
+          <Button
+            key={`issue-${i.number}`}
+            plain
+            dimColor={i.state === 'closed'}
+            hover={{ backgroundColor: HOVER_BACKING }}
+            onPress={() => openIssue($, i)}
+          >
+            <Text wrap="truncate-end">{i.title}</Text>
+          </Button>
+        </Box>
+        <Text dimColor>{ago(i.updatedAt, now)}</Text>
+      </Box>
+    )
+    const group = (key: 'open' | 'closed', title: string, issues: IssuesIssue[]) => (
+      <Box key={`group-${key}`} flexDirection="column">
+        <Button
+          key={`group-${key}`}
+          plain
+          dimColor
+          hover={{ backgroundColor: HOVER_BACKING }}
+          onPress={() => toggleGroup($, key)}
+        >
+          {`${title} · ${issues.length} ${fold[key] ? '›' : '⌄'}`}
+        </Button>
+        {!fold[key] && issues.map(row)}
+      </Box>
+    )
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
@@ -635,12 +679,7 @@ export const register: Register = on => {
             ) : (
               <Text dimColor>{state.cwd ?? 'Репозиторий'}</Text>
             )}
-            {repo && (
-              <Box flexDirection="row">
-                <Link href={issuesPage(repo)} label={repo.provider === 'github' ? 'GitHub' : 'GitLab'} />
-                <Text dimColor> · открытых: {shown.length}</Text>
-              </Box>
-            )}
+            {repo && <Link href={issuesPage(repo)} label={repo.provider === 'github' ? 'GitHub' : 'GitLab'} />}
           </Box>
           <Button key="refresh" dimColor onPress={() => load($)}>
             {state.status === 'loading' ? 'Обновляю…' : 'Обновить'}
@@ -673,29 +712,13 @@ export const register: Register = on => {
             </Text>
           </Box>
         )}
-        {state.status === 'loading' && shown.length === 0 && <Text dimColor>Загружаю…</Text>}
-        {state.status === 'ready' && shown.length === 0 && <Text dimColor>Открытых issues нет</Text>}
-        <Box flexDirection="column" gap={1}>
-          {shown.map(i => (
-            <Box key={`card-${i.number}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-              {/* The desktop draws a button's content as one line, so the meta line
-                  and the title are two buttons that both open the issue. */}
-              <Button key={`issue-meta-${i.number}`} plain dimColor onPress={() => openIssue($, i)}>
-                {`● #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}${i.comments ? ` · 💬 ${i.comments}` : ''}`}
-              </Button>
-              <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
-                <Text bold wrap="truncate-end">
-                  {i.title}
-                </Text>
-              </Button>
-              {i.labels.length > 0 && (
-                <Text color="suggestion" wrap="truncate-end">
-                  {i.labels.map(l => `#${l}`).join('  ')}
-                </Text>
-              )}
-            </Box>
-          ))}
-        </Box>
+        {state.status === 'loading' && state.issues.length === 0 && <Text dimColor>Загружаю…</Text>}
+        {(state.status === 'ready' || state.issues.length > 0) && (
+          <Box flexDirection="column" gap={1}>
+            {group('open', 'Открытые', openIssues)}
+            {group('closed', 'Закрытые', closedIssues)}
+          </Box>
+        )}
       </Box>
     )
   })
