@@ -552,3 +552,42 @@ test('own comments are changed and deleted from the card, others are left alone'
   expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('ticked issues are closed or reopened from the selection bar', async ($, on) => {
+  const calls: string[] = []
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
+    if (argv[0] !== 'gh') throw new Error('not found')
+    if (argv[1] === '--version' || argv[1] === 'auth') return ok()
+    const endpoint = argv[argv.length - 1]!
+    if (endpoint.startsWith('repos/acme/site/issues?')) return ok(GH_ISSUES)
+    if (argv.includes('PATCH')) {
+      calls.push(`${endpoint} ${argv.filter(a => a.startsWith('state=')).join(' ')}`)
+      return ok({})
+    }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+
+  expect(await ui.find({ key: 'selection-bar' })).toBeUndefined()
+  await ui.press({ key: 'check-7' })
+  expect(await ui.find({ type: 'Text', text: '1 выбрано' })).toBeDefined()
+  expect(await ui.find({ key: 'selection-reopen' })).toBeUndefined()
+  await ui.press({ key: 'selection-close' })
+  expect(calls).toEqual(['repos/acme/site/issues/7 state=closed'])
+  expect(await ui.find({ key: 'selection-bar' })).toBeUndefined()
+
+  await ui.press({ key: 'group-closed' })
+  await ui.press({ key: 'check-3' })
+  await ui.press({ key: 'selection-reopen' })
+  expect(calls[1]).toBe('repos/acme/site/issues/3 state=open')
+  expect(await ui.find({ key: 'group-open', text: 'Открытые · 1 ⌄' })).toBeDefined()
+
+  await ui.press({ key: 'check-3' })
+  await ui.press({ key: 'selection-clear' })
+  expect(await ui.find({ key: 'selection-bar' })).toBeUndefined()
+  await ui.unmount()
+})
