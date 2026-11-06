@@ -280,7 +280,7 @@ test('without gh and without a git login, the panel says what to do', async ($, 
   await ui.unmount()
 })
 
-test('the Issues button shows the pane and closes it: under the prompt on the terminal, above it on the desktop', async ($, on) => {
+test('the Issues button shows the pane and closes it: under the prompt on the terminal and on the desktop', async ($, on) => {
   // The first open is not placed (as when the app took the pane away).
   let opens = 0
   let closes = 0
@@ -336,10 +336,14 @@ test('the Issues button shows the pane and closes it: under the prompt on the te
     },
   } as const
 
-  // The desktop: in the band above the prompt, never in the hint line.
+  // The desktop: in the footer under the prompt, as its own button; not in
+  // the hint line, not in the band above.
   const hintOnDesktop = await $.ui.mount({ ...HINT, surface: 'desktop' })
   expect(await hintOnDesktop.find({ key: 'toggle-issues' })).toBeUndefined()
   await hintOnDesktop.unmount()
+  const bandOnDesktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await bandOnDesktop.find({ key: 'toggle-issues' })).toBeUndefined()
+  await bandOnDesktop.unmount()
   const footer = await $.ui.mount({
     plugin: 'issues-panel',
     component: 'SessionMode',
@@ -347,27 +351,22 @@ test('the Issues button shows the pane and closes it: under the prompt on the te
     props: { modes: ['Auto'] },
     surface: 'desktop',
   })
+  expect(await footer.find({ key: 'toggle-issues', text: 'Issues · 1' })).toBeDefined()
   await footer.press({ key: 'toggle-issues' })
   expect(opens).toBe(2)
   await footer.press({ key: 'toggle-issues' })
   expect(closes).toBe(1)
+  expect(await footer.find({ key: 'toggle-issues' })).toBeDefined()
   await footer.unmount()
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: /· 1/ })).toBeDefined()
-  await band.press({ key: 'toggle-issues' })
-  expect(opens).toBe(3)
-  await band.press({ key: 'toggle-issues' })
-  expect(closes).toBe(2)
-  expect(await band.find({ key: 'toggle-issues' })).toBeDefined()
-  await band.unmount()
 
   // The terminal: in the hint line, not in the band.
   const bandOnTerminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await bandOnTerminal.find({ key: 'toggle-issues' })).toBeUndefined()
   await bandOnTerminal.unmount()
   const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  expect(await hint.find({ type: 'Text', text: /· 1/ })).toBeDefined()
   await hint.press({ key: 'toggle-issues' })
-  expect(opens).toBe(4)
+  expect(opens).toBe(3)
   await hint.unmount()
 })
 
