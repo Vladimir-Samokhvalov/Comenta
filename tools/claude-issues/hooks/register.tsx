@@ -58,6 +58,9 @@ async function togglePane($: EngineInterface): Promise<void> {
   else await showPane($)
 }
 
+/** A translucent grey that reads on light and dark themes alike. */
+const HOVER_BACKING = 'rgba(128, 128, 128, 0.18)'
+
 type ResolveInput = Parameters<EngineInterface['ui']['resolve']>[0]
 
 /** The Issues button, or nothing where this folder has no repository. */
@@ -68,10 +71,20 @@ async function issuesButton($: EngineInterface, e: ResolveInput) {
   const { Button, Text } = $.ui.resolve(e)
   const open = state.issues.filter(i => i.state === 'open').length
   const label = state.repo ? `Issues · ${open}` : 'Issues'
-  // The desktop's own button, as the model and mode beside it are drawn.
+  // The desktop: bare text like the model and mode beside it, a grey
+  // backing only under the pointer.
   if (e.surface !== 'terminal') {
+    const { Box } = $.ui.resolve(e)
     return (
-      <Button key="toggle-issues" variant="secondary" label={label} onPress={() => togglePane($)} />
+      <Box key="issues-chip">
+        <Button
+          key="toggle-issues"
+          plain
+          label={label}
+          hover={{ backgroundColor: HOVER_BACKING }}
+          onPress={() => togglePane($)}
+        />
+      </Box>
     )
   }
   return (
