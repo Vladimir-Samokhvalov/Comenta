@@ -374,15 +374,17 @@ export const register: Register = on => {
             <Link href={issue.url} label="↗" />
           </Box>
           <Box flexDirection="column">
-            <Text bold wrap="wrap">
-              #{issue.number} {issue.title}
-            </Text>
             <Text dimColor>
+              <Text bold>#{issue.number}</Text>
+              {' · '}
               <Text color={issue.state === 'open' ? 'success' : 'merged'}>
                 {issue.state === 'open' ? 'Открыт' : 'Закрыт'}
               </Text>
               {` · ${issue.author} · ${ago(issue.updatedAt, now)}`}
               {issue.labels.length ? ` · ${issue.labels.join(', ')}` : ''}
+            </Text>
+            <Text bold wrap="wrap">
+              {issue.title}
             </Text>
           </Box>
           {open.isConfirmingClose && (
