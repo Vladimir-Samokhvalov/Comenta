@@ -280,7 +280,7 @@ test('without gh and without a git login, the panel says what to do', async ($, 
   await ui.unmount()
 })
 
-test('a row above the prompt shows while the pane is not up and reopens it', async ($, on) => {
+test('a button under the prompt opens the pane and hides it again', async ($, on) => {
   // The first open is not placed (as when the person closed the pane):
   // the row shows; its button opens the pane, and the row goes.
   let opens = 0
@@ -303,28 +303,27 @@ test('a row above the prompt shows while the pane is not up and reopens it', asy
     return <Box />
   })
 
+  let closes = 0
+  on('ui.close', () => {
+    closes += 1
+    return { value: undefined }
+  })
   const BAND = {
     plugin: 'issues-panel',
-    component: 'AbovePrompt',
-    requestId: 'band',
-    props: {
-      hasSurvey: false,
-      isWorking: false,
-      maxRows: 3,
-      bodyColumns: 80,
-      scroll: { offset: 0, bodyRows: 3 },
-      view: {},
-    },
+    component: 'PromptHint',
+    requestId: 'hint',
+    props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
   } as const
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(opens).toBe(1)
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ key: 'open-issues' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
-  await band.press({ key: 'open-issues' })
+  expect(await band.find({ key: 'toggle-issues' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /· 1/ })).toBeDefined()
+  await band.press({ key: 'toggle-issues' })
   expect(opens).toBe(2)
-  expect(await band.find({ key: 'open-issues' })).toBeUndefined()
+  await band.press({ key: 'toggle-issues' })
+  expect(closes).toBe(1)
   await band.unmount()
 })
 
