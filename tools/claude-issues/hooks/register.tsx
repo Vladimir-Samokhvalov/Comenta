@@ -69,7 +69,7 @@ async function issuesButton($: EngineInterface, e: ResolveInput) {
   const open = state.issues.filter(i => i.state === 'open').length
   return (
     <Button key="toggle-issues" plain dimColor={!isOpen} onPress={() => togglePane($)}>
-      {'📋 Issues'}
+      {'Issues'}
       {state.repo ? <Text dimColor> · {open}</Text> : ''}
     </Button>
   )
