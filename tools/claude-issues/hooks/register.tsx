@@ -11,6 +11,9 @@ import {
   issueBodyHtml,
   closeIssue,
   connect,
+  currentLogin,
+  deleteComment,
+  editComment,
   cleanMarkdown,
   issueAsContext,
   listComments,
@@ -30,7 +33,7 @@ const list = atom({ plugin: 'issues-panel', key: 'list' } as const, { status: 'i
   shape: 'list-2',
 })
 const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as IssuesDetail | null, {
-  shape: 'detail-2',
+  shape: 'detail-3',
 })
 
 const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
@@ -166,11 +169,19 @@ async function openIssue($: EngineInterface, issue: IssuesIssue): Promise<void> 
     draft: '',
     isSending: false,
     draftKey: 0,
+    editDraft: '',
+    isSaving: false,
+    isDeleting: false,
   }))
   void loadAttachments($, io, repo, issue)
+
   try {
-    const comments = await listComments(io, repo, number)
-    await setDetail($, d => (d?.number === number ? { ...d, status: 'ready', comments } : d))
+    // Who the panel acts as, so its own comments get Изменить / Удалить.
+    const [comments, me] = await Promise.all([
+      listComments(io, repo, number),
+      currentLogin(io, repo).catch(() => undefined),
+    ])
+    await setDetail($, d => (d?.number === number ? { ...d, status: 'ready', comments, me } : d))
   } catch (err) {
     await setDetail($, d => (d?.number === number ? { ...d, status: 'error', error: message(err) } : d))
   }
@@ -239,6 +250,49 @@ async function sendComment($: EngineInterface, number: number, text: string): Pr
     }))
   } catch (err) {
     await setDetail($, d => (d?.number === number ? { ...d, isSending: false, error: message(err) } : d))
+  }
+}
+
+/** Saves the comment being changed, then reads the comments again. */
+async function saveEdit($: EngineInterface, number: number, text: string): Promise<void> {
+  const body = text.trim()
+  const state = await read($, list)
+  const now = await read($, detail)
+  const id = now?.editingId
+  if (!body || !state.repo || !state.cwd || now?.number !== number || id === undefined || now.isSaving) return
+  const io = runner($, state.cwd)
+  await setDetail($, d => (d?.number === number ? { ...d, editDraft: text, isSaving: true, error: undefined } : d))
+  try {
+    await editComment(io, state.repo, number, id, body)
+    const comments = await listComments(io, state.repo, number)
+    await setDetail($, d =>
+      d?.number === number ? { ...d, comments, editingId: undefined, editDraft: '', isSaving: false } : d,
+    )
+  } catch (err) {
+    await setDetail($, d => (d?.number === number ? { ...d, isSaving: false, error: message(err) } : d))
+  }
+}
+
+/** Deletes the comment asked about, then reads the comments again. */
+async function removeComment($: EngineInterface, number: number): Promise<void> {
+  const state = await read($, list)
+  const now = await read($, detail)
+  const id = now?.confirmDeleteId
+  if (!state.repo || !state.cwd || now?.number !== number || id === undefined || now.isDeleting) return
+  const io = runner($, state.cwd)
+  await setDetail($, d => (d?.number === number ? { ...d, isDeleting: true, error: undefined } : d))
+  try {
+    await deleteComment(io, state.repo, number, id)
+    const comments = await listComments(io, state.repo, number)
+    await setDetail($, d =>
+      d?.number === number ? { ...d, comments, confirmDeleteId: undefined, isDeleting: false } : d,
+    )
+    await setList($, old => ({
+      ...old,
+      issues: old.issues.map(i => (i.number === number ? { ...i, comments: comments.length } : i)),
+    }))
+  } catch (err) {
+    await setDetail($, d => (d?.number === number ? { ...d, isDeleting: false, error: message(err) } : d))
   }
 }
 
@@ -374,15 +428,17 @@ export const register: Register = on => {
             <Link href={issue.url} label="↗" />
           </Box>
           <Box flexDirection="column">
-            <Text bold wrap="wrap">
-              #{issue.number} {issue.title}
-            </Text>
             <Text dimColor>
+              <Text bold>#{issue.number}</Text>
+              {' · '}
               <Text color={issue.state === 'open' ? 'success' : 'merged'}>
                 {issue.state === 'open' ? 'Открыт' : 'Закрыт'}
               </Text>
               {` · ${issue.author} · ${ago(issue.updatedAt, now)}`}
               {issue.labels.length ? ` · ${issue.labels.join(', ')}` : ''}
+            </Text>
+            <Text bold wrap="wrap">
+              {issue.title}
             </Text>
           </Box>
           {open.isConfirmingClose && (
@@ -431,15 +487,92 @@ export const register: Register = on => {
           <Text bold>Комментарии{open.status === 'ready' ? ` (${open.comments.length})` : ''}</Text>
           {open.status === 'loading' && <Text dimColor>Загружаю…</Text>}
           {open.status === 'ready' && open.comments.length === 0 && <Text dimColor>Пока нет</Text>}
-          {open.comments.map((c, n) => (
-            <Box key={`comment-${n}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-              <Text>
-                <Text bold>{c.author}</Text>
-                <Text dimColor> · {ago(c.createdAt, now)}</Text>
-              </Text>
-              <Markdown text={cleanMarkdown(c.body) || '—'} />
-            </Box>
-          ))}
+          {open.comments.map(c => {
+            const isMine = !!open.me && c.author === open.me
+            const isEditing = open.editingId === c.id
+            const isAsking = open.confirmDeleteId === c.id
+            const isBusy = open.isSaving || open.isDeleting
+            return (
+              <Box key={`comment-${c.id}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+                <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+                  <Text>
+                    <Text bold>{c.author}</Text>
+                    <Text dimColor> · {ago(c.createdAt, now)}</Text>
+                  </Text>
+                  {isMine && !isEditing && !isAsking && !isBusy && (
+                    <Box flexDirection="row" gap={1}>
+                      <Button
+                        key={`edit-${c.id}`}
+                        plain
+                        dimColor
+                        onPress={() =>
+                          setDetail($, d =>
+                            d ? { ...d, editingId: c.id, editDraft: c.body, confirmDeleteId: undefined } : d,
+                          )
+                        }
+                      >
+                        Изменить
+                      </Button>
+                      <Button
+                        key={`delete-${c.id}`}
+                        plain
+                        dimColor
+                        onPress={() =>
+                          setDetail($, d => (d ? { ...d, confirmDeleteId: c.id, editingId: undefined } : d))
+                        }
+                      >
+                        Удалить
+                      </Button>
+                    </Box>
+                  )}
+                </Box>
+                {isEditing ? (
+                  <Box flexDirection="column" gap={1}>
+                    <Input
+                      key={`editing-${c.id}`}
+                      rows={3}
+                      value={open.editDraft}
+                      submitLabel="Сохранить"
+                      onInput={value => setDetail($, d => (d?.editingId === c.id ? { ...d, editDraft: value } : d))}
+                      onSubmit={value => saveEdit($, issue.number, value)}
+                    />
+                    {open.isSaving ? (
+                      <Text dimColor>Сохраняю…</Text>
+                    ) : (
+                      <Button
+                        key={`edit-cancel-${c.id}`}
+                        plain
+                        dimColor
+                        onPress={() => setDetail($, d => (d ? { ...d, editingId: undefined, editDraft: '' } : d))}
+                      >
+                        Отмена
+                      </Button>
+                    )}
+                  </Box>
+                ) : (
+                  <Markdown text={cleanMarkdown(c.body) || '—'} />
+                )}
+                {isAsking && (
+                  <Box flexDirection="row" gap={1} alignItems="center">
+                    <Text>{open.isDeleting ? 'Удаляю…' : 'Удалить комментарий?'}</Text>
+                    {!open.isDeleting && (
+                      <Button key={`delete-yes-${c.id}`} variant="primary" onPress={() => removeComment($, issue.number)}>
+                        Да, удалить
+                      </Button>
+                    )}
+                    {!open.isDeleting && (
+                      <Button
+                        key={`delete-no-${c.id}`}
+                        onPress={() => setDetail($, d => (d ? { ...d, confirmDeleteId: undefined } : d))}
+                      >
+                        Нет
+                      </Button>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
           <Box flexDirection="column" gap={1}>
             <Input
               key={`draft-${open.draftKey}`}
@@ -489,16 +622,18 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {shown.map(i => (
             <Box key={`card-${i.number}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+              {/* One press anywhere on the card: the meta line, then the title. */}
               <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
+                <Text dimColor wrap="truncate-end">
+                  <Text color="success">●</Text>
+                  {` #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}`}
+                  {i.comments ? ` · 💬 ${i.comments}` : ''}
+                </Text>
+                {'\n'}
                 <Text bold wrap="truncate-end">
                   {i.title}
                 </Text>
               </Button>
-              <Text dimColor wrap="truncate-end">
-                <Text color="success">●</Text>
-                {` #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}`}
-                {i.comments ? ` · 💬 ${i.comments}` : ''}
-              </Text>
               {i.labels.length > 0 && (
                 <Text color="suggestion" wrap="truncate-end">
                   {i.labels.map(l => `#${l}`).join('  ')}

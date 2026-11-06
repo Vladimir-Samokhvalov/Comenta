@@ -451,3 +451,57 @@ test('a comment is written from the card, and description pictures are drawn', a
   expect(await ui.find({ key: 'draft-1' })).toBeDefined()
   await ui.unmount()
 })
+
+test('own comments are changed and deleted from the card, others are left alone', async ($, on) => {
+  let comments = [
+    { id: 1, user: { login: 'vlad' }, body: 'мой', created_at: new Date().toISOString() },
+    { id: 2, user: { login: 'anna' }, body: 'чужой', created_at: new Date().toISOString() },
+  ]
+  const calls: string[] = []
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
+    if (argv[0] === 'sh') return fail('no pictures')
+    if (argv[0] !== 'gh') throw new Error('not found')
+    if (argv[1] === '--version' || argv[1] === 'auth') return ok()
+    const endpoint = argv[argv.length - 1]!
+    if (endpoint.startsWith('repos/acme/site/issues?')) return ok([GH_ISSUES[0]])
+    if (endpoint === 'user') return ok({ login: 'vlad' })
+    if (endpoint === 'repos/acme/site/issues/7') return ok({ body_html: '' })
+    if (endpoint === 'repos/acme/site/issues/7/comments?per_page=100') return ok(comments)
+    if (endpoint === 'repos/acme/site/issues/comments/1' && argv.includes('PATCH')) {
+      const body = argv[argv.indexOf('-f') + 1]!.slice('body='.length)
+      calls.push(`edit ${body}`)
+      comments = comments.map(c => (c.id === 1 ? { ...c, body } : c))
+      return ok(comments[0])
+    }
+    if (endpoint === 'repos/acme/site/issues/comments/1' && argv.includes('DELETE')) {
+      calls.push('delete')
+      comments = comments.filter(c => c.id !== 1)
+      return ok()
+    }
+    return fail(`unexpected ${endpoint}`)
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'issue-7' })
+
+  expect(await ui.find({ key: 'edit-1' })).toBeDefined()
+  expect(await ui.find({ key: 'edit-2' })).toBeUndefined()
+  expect(await ui.find({ key: 'delete-2' })).toBeUndefined()
+
+  await ui.press({ key: 'edit-1' })
+  await ui.input({ key: 'editing-1', text: 'исправил', kind: 'submit' })
+  expect(calls).toEqual(['edit исправил'])
+  expect(await ui.find({ key: 'editing-1' })).toBeUndefined()
+  expect(await ui.find({ type: 'Markdown', text: /исправил/ })).toBeDefined()
+
+  await ui.press({ key: 'delete-1' })
+  expect(await ui.find({ type: 'Text', text: /Удалить комментарий\?/ })).toBeDefined()
+  await ui.press({ key: 'delete-yes-1' })
+  expect(calls).toEqual(['edit исправил', 'delete'])
+  expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
+  await ui.unmount()
+})

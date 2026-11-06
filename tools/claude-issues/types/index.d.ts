@@ -28,7 +28,7 @@ export type IssuesIssue = {
 }
 export type Issue = IssuesIssue
 
-export type IssuesComment = { author: string; body: string; createdAt: string }
+export type IssuesComment = { id: number; author: string; body: string; createdAt: string }
 export type Comment = IssuesComment
 
 /** The list: what was loaded for which folder. */
@@ -57,6 +57,15 @@ export type IssuesDetail = {
   isSending: boolean
   /** Bumped after a send, so the field starts empty. */
   draftKey: number
+  /** The login the panel acts as, once known: its comments can be changed. */
+  me?: string
+  /** The comment being changed, its new text, and whether it is being saved. */
+  editingId?: number
+  editDraft: string
+  isSaving: boolean
+  /** Asking "delete this comment?", and whether it is being deleted. */
+  confirmDeleteId?: number
+  isDeleting: boolean
 }
 
 export type IssuesAttachment = {

@@ -336,6 +336,7 @@ export function fromGitlabIssue(raw: Json): Issue {
 
 export function fromGithubComment(raw: Json): Comment {
   return {
+    id: Number(raw.id),
     author: String(raw.user?.login ?? ''),
     body: String(raw.body ?? ''),
     createdAt: String(raw.created_at ?? ''),
@@ -345,6 +346,7 @@ export function fromGithubComment(raw: Json): Comment {
 export function fromGitlabNote(raw: Json): Comment | undefined {
   if (raw.system) return undefined
   return {
+    id: Number(raw.id),
     author: String(raw.author?.username ?? ''),
     body: String(raw.body ?? ''),
     createdAt: String(raw.created_at ?? ''),
@@ -460,6 +462,35 @@ export async function addComment(io: Io, repo: Repo, number: number, body: strin
     await api(io, repo, `repos/${repo.path}/issues/${number}/comments`, 'POST', { body })
   } else {
     await api(io, repo, `${gitlabProject(repo)}/issues/${number}/notes`, 'POST', { body })
+  }
+}
+
+/** The account the panel acts as on this host (its login), once asked. */
+const logins = new Map<string, string>()
+
+export async function currentLogin(io: Io, repo: Repo): Promise<string | undefined> {
+  const known = logins.get(`${repo.provider}:${repo.host}`)
+  if (known) return known
+  const raw = (await api(io, repo, 'user')) as Json
+  const login = String((repo.provider === 'github' ? raw?.login : raw?.username) ?? '')
+  if (!login) return undefined
+  logins.set(`${repo.provider}:${repo.host}`, login)
+  return login
+}
+
+export async function editComment(io: Io, repo: Repo, number: number, id: number, body: string): Promise<void> {
+  if (repo.provider === 'github') {
+    await api(io, repo, `repos/${repo.path}/issues/comments/${id}`, 'PATCH', { body })
+  } else {
+    await api(io, repo, `${gitlabProject(repo)}/issues/${number}/notes/${id}`, 'PUT', { body })
+  }
+}
+
+export async function deleteComment(io: Io, repo: Repo, number: number, id: number): Promise<void> {
+  if (repo.provider === 'github') {
+    await api(io, repo, `repos/${repo.path}/issues/comments/${id}`, 'DELETE')
+  } else {
+    await api(io, repo, `${gitlabProject(repo)}/issues/${number}/notes/${id}`, 'DELETE')
   }
 }
 
