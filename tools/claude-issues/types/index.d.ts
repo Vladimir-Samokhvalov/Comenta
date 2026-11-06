@@ -39,6 +39,11 @@ export type IssuesList = {
   issues: Issue[]
   error?: string
   loadedAt?: number
+  /** No login for this host: the panel asks for a token (never kept here). */
+  needsToken?: { host: string; provider?: Provider }
+  isSavingToken?: boolean
+  /** Bumped after a failed save, so the token field starts empty. */
+  tokenKey?: number
 }
 
 /** The open issue, when the panel shows one. */

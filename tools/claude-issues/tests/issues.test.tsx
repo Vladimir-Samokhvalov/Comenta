@@ -274,16 +274,52 @@ test('without gh the login git keeps is used, straight to the API', async ($, on
   await ui.unmount()
 })
 
-test('without gh and without a git login, the panel says what to do', async ($, on) => {
-  on('session.cwd', () => ({ value: '/work/site' }))
+test('without a login the panel asks for a token, checks it and stores it through git', async ($, on) => {
+  const stored: string[] = []
+  let kept = ''
+  on('session.cwd', () => ({ value: '/work/app' }))
   on('process.run', (_, e) => {
-    if (e.argv[0] === 'git' && e.argv[1] === 'remote') return ok('origin\thttps://github.com/acme/site.git (fetch)\n')
-    if (e.argv[0] === 'git') return fail('fatal: could not read Username: terminal prompts disabled')
+    const argv = e.argv
+    if (argv[0] === 'git' && argv[1] === 'remote') return ok('origin\tgit@gitlab.acme.dev:team/app.git (fetch)\n')
+    if (argv[0] === 'git' && argv[1] === 'credential' && argv[2] === 'approve') {
+      stored.push(e.init?.stdin ?? '')
+      kept = /password=(.*)/.exec(e.init?.stdin ?? '')?.[1] ?? ''
+      return ok()
+    }
+    if (argv[0] === 'git' && argv[1] === 'credential') {
+      return kept ? ok(`protocol=https\nhost=gitlab.acme.dev\nusername=oauth2\npassword=${kept}\n`) : fail('no')
+    }
     throw new Error('not found')
   })
+  on('http.fetch', (_, e) => {
+    const auth = e.init?.headers?.Authorization ?? ''
+    const answer = (status: number, body: unknown) => ({
+      value: { status, ok: status < 300, headers: {}, text: JSON.stringify(body) },
+    })
+    if (auth !== 'Bearer glpat-good') return answer(401, { message: '401 Unauthorized' })
+    if (e.url === 'https://gitlab.acme.dev/api/v4/version') return answer(200, { version: '17.0' })
+    if (e.url.startsWith('https://gitlab.acme.dev/api/v4/projects/team%2Fapp/issues?')) return answer(200, [])
+    return answer(404, { message: 'Not Found' })
+  })
+  on('ui.toast', () => ({ value: undefined }))
+
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /не найден gh, и git не хранит пароль/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /не найден glab, и git не хранит для него токен/ })).toBeDefined()
+  const page = await ui.find({ type: 'Link', text: /Создать токен в GitLab/ })
+  expect((page as { props?: { href?: string } } | undefined)?.props?.href).toBe(
+    'https://gitlab.acme.dev/-/user_settings/personal_access_tokens?name=Claude%20Issues&scopes=api',
+  )
+
+  // A wrong token is refused and nothing is stored.
+  await ui.input({ key: 'token-0', text: 'glpat-bad', kind: 'submit' })
+  expect(stored).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /не принял этот токен/ })).toBeDefined()
+
+  // A good one is stored through git, and the list loads.
+  await ui.input({ key: 'token-1', text: 'glpat-good', kind: 'submit' })
+  expect(stored).toEqual(['protocol=https\nhost=gitlab.acme.dev\nusername=oauth2\npassword=glpat-good\n\n'])
+  expect(await ui.find({ type: 'Text', text: /Открытых issues нет/ })).toBeDefined()
   await ui.unmount()
 })
 
