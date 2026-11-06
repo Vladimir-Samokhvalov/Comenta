@@ -444,7 +444,8 @@ test('a comment is written from the card, and description pictures are drawn', a
   expect(await ui.find({ type: 'Text', text: /<img/ })).toBeUndefined()
 
   await ui.input({ key: 'draft-0', text: 'Починил, проверь', kind: 'change' })
-  await ui.press({ key: 'send' })
+  expect(await ui.find({ key: 'send' })).toBeUndefined()
+  await ui.input({ key: 'draft-0', text: 'Починил, проверь', kind: 'submit' })
   expect(posted).toEqual(['body=Починил, проверь'])
   expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
   expect(await ui.find({ key: 'draft-1' })).toBeDefined()
