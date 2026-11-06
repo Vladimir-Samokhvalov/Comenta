@@ -138,7 +138,8 @@ test('the pane lists issues, opens one with comments, closes it, and inserts it'
     await ui.press({ key: 'refresh' })
 
     expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
-    const issuesLink = await ui.find({ type: 'Link', text: 'acme/site' })
+    expect(await ui.find({ type: 'Link', text: 'acme/site' })).toBeUndefined()
+    const issuesLink = await ui.find({ type: 'Link', text: 'GitHub' })
     expect((issuesLink as { props?: { href?: string } } | undefined)?.props?.href).toBe('https://github.com/acme/site/issues')
     expect(await ui.find({ key: 'issue-6' })).toBeUndefined()
     expect(await ui.find({ key: 'issue-3' })).toBeUndefined()
@@ -202,7 +203,7 @@ test('a GitLab repository is read through glab, system notes left out', async ($
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
-  const issuesLink = await ui.find({ type: 'Link', text: 'group/app' })
+  const issuesLink = await ui.find({ type: 'Link', text: 'GitLab' })
   expect((issuesLink as { props?: { href?: string } } | undefined)?.props?.href).toBe(
     'https://gitlab.example.ru/group/app/-/issues',
   )
