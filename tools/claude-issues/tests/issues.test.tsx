@@ -327,3 +327,58 @@ test('a row above the prompt shows while the pane is not up and reopens it', asy
   expect(await band.find({ key: 'open-issues' })).toBeUndefined()
   await band.unmount()
 })
+
+test('a comment is written from the card, and description pictures are drawn', async ($, on) => {
+  const posted: string[] = []
+  let fetched = ''
+  const body =
+    'Смотри скрин\n\n<img width="1904" height="664" alt="Image" src="https://github.com/user-attachments/assets/f30b2f99-9cc0-4259-b33b-5ef59a10f8fe" />\n\n[запись.webm](https://github.com/acme/site/blob/comenta-attachments/comenta/1/rec.webm)'
+  const issue = { ...GH_ISSUES[0]!, body }
+  on('session.cwd', () => ({ value: '/work/site' }))
+  on('process.run', (_, e) => {
+    const argv = e.argv
+    if (argv[0] === 'git') return ok('origin\tgit@github.com:acme/site.git (fetch)\n')
+    if (argv[0] === 'sh') {
+      fetched = argv[argv.length - 1]!
+      return ok('image/jpeg 40 20\nQUJD')
+    }
+    if (argv[0] !== 'gh') throw new Error('not found')
+    if (argv[1] === '--version' || argv[1] === 'auth') return ok()
+    const endpoint = argv[argv.length - 1]!
+    if (endpoint.startsWith('repos/acme/site/issues?')) return ok([issue])
+    if (endpoint === 'repos/acme/site/issues/7' && argv.includes('Accept: application/vnd.github.full+json')) {
+      return ok({
+        body_html:
+          '<p><img alt="Image" src="https://private-user-images.githubusercontent.com/1/2-f30b2f99-9cc0-4259-b33b-5ef59a10f8fe.png?jwt=abc&amp;x=1"></p>',
+      })
+    }
+    if (endpoint === 'repos/acme/site/issues/7/comments' && argv.includes('POST')) {
+      posted.push(argv[argv.indexOf('-f') + 1]!)
+      return ok({})
+    }
+    if (endpoint === 'repos/acme/site/issues/7/comments?per_page=100') {
+      return ok(posted.map(p => ({ user: { login: 'vlad' }, body: p.slice('body='.length), created_at: new Date().toISOString() })))
+    }
+    return fail(`unexpected ${endpoint}`)
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'issue-7' })
+
+  // The picture is read from the signed address and drawn; the recording is a link.
+  expect(fetched).toBe(
+    'https://private-user-images.githubusercontent.com/1/2-f30b2f99-9cc0-4259-b33b-5ef59a10f8fe.png?jwt=abc&x=1',
+  )
+  expect(await ui.find({ type: 'Text', text: /Вложения \(2\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Svg' })).toBeDefined()
+  expect(await ui.find({ type: 'Link', text: /запись\.webm/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /<img/ })).toBeUndefined()
+
+  await ui.input({ key: 'draft-0', text: 'Починил, проверь', kind: 'change' })
+  await ui.press({ key: 'send' })
+  expect(posted).toEqual(['body=Починил, проверь'])
+  expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
+  expect(await ui.find({ key: 'draft-1' })).toBeDefined()
+  await ui.unmount()
+})

@@ -1,10 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { IssuesDetail, IssuesIssue, IssuesList } from '../types'
+import type { IssuesDetail, IssuesIssue, IssuesList, IssuesRepo } from '../types'
 import {
   TrackerError,
+  addComment,
   ago,
+  findAttachments,
+  imageAsSvg,
+  issueBodyHtml,
   closeIssue,
   connect,
   cleanMarkdown,
@@ -26,7 +30,7 @@ const list = atom({ plugin: 'issues-panel', key: 'list' } as const, { status: 'i
   shape: 'list-2',
 })
 const detail = atom({ plugin: 'issues-panel', key: 'detail' } as const, null as IssuesDetail | null, {
-  shape: 'detail-1',
+  shape: 'detail-2',
 })
 
 const isPaneOpen = atom({ plugin: 'issues-panel', key: 'isPaneOpen' } as const, false)
@@ -90,6 +94,8 @@ async function load($: EngineInterface): Promise<void> {
 async function openIssue($: EngineInterface, issue: IssuesIssue): Promise<void> {
   const state = await read($, list)
   if (!state.repo || !state.cwd) return
+  const repo = state.repo
+  const io = runner($, state.cwd)
   const number = issue.number
   await setDetail($, () => ({
     number,
@@ -97,12 +103,83 @@ async function openIssue($: EngineInterface, issue: IssuesIssue): Promise<void> 
     comments: [],
     isConfirmingClose: false,
     isClosing: false,
+    attachments: [],
+    draft: '',
+    isSending: false,
+    draftKey: 0,
   }))
+  void loadAttachments($, io, repo, issue)
   try {
-    const comments = await listComments(runner($, state.cwd), state.repo, number)
+    const comments = await listComments(io, repo, number)
     await setDetail($, d => (d?.number === number ? { ...d, status: 'ready', comments } : d))
   } catch (err) {
     await setDetail($, d => (d?.number === number ? { ...d, status: 'error', error: message(err) } : d))
+  }
+}
+
+/** Finds the description's pictures and files, then reads each picture. */
+async function loadAttachments($: EngineInterface, io: Io, repo: IssuesRepo, issue: IssuesIssue): Promise<void> {
+  const number = issue.number
+  let html: string | undefined
+  try {
+    html = await issueBodyHtml(io, repo, number)
+  } catch {
+    // the pictures then load from their plain addresses, if they can
+  }
+  const found = findAttachments(repo, issue.body, html)
+  if (found.length === 0) return
+  await setDetail($, d =>
+    d?.number === number
+      ? {
+          ...d,
+          attachments: found.map(a => ({
+            kind: a.kind,
+            name: a.name,
+            url: a.url,
+            status: a.kind === 'image' ? 'loading' : 'ready',
+          })),
+        }
+      : d,
+  )
+  for (const a of found) {
+    if (a.kind !== 'image') continue
+    const svg = await imageAsSvg(io, a.fetchUrl)
+    await setDetail($, d =>
+      d?.number === number
+        ? {
+            ...d,
+            attachments: d.attachments.map(x =>
+              x.url === a.url ? { ...x, status: svg ? 'ready' : 'failed', ...(svg ? { svg } : {}) } : x,
+            ),
+          }
+        : d,
+    )
+  }
+}
+
+async function sendComment($: EngineInterface, number: number, text: string): Promise<void> {
+  const body = text.trim()
+  const state = await read($, list)
+  const now = await read($, detail)
+  if (!body || !state.repo || !state.cwd || now?.number !== number || now.isSending) return
+  const io = runner($, state.cwd)
+  await setDetail($, d => (d?.number === number ? { ...d, draft: text, isSending: true, error: undefined } : d))
+  try {
+    await addComment(io, state.repo, number, body)
+    const comments = await listComments(io, state.repo, number)
+    await setDetail($, d =>
+      d?.number === number
+        ? { ...d, comments, status: 'ready', draft: '', isSending: false, draftKey: d.draftKey + 1 }
+        : d,
+    )
+    await setList($, old => ({
+      ...old,
+      issues: old.issues.map(i =>
+        i.number === number ? { ...i, comments: comments.length, updatedAt: new Date().toISOString() } : i,
+      ),
+    }))
+  } catch (err) {
+    await setDetail($, d => (d?.number === number ? { ...d, isSending: false, error: message(err) } : d))
   }
 }
 
@@ -190,7 +267,10 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Link, Markdown, Input } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    // The terminal has no Svg: pictures are links there.
+    const Svg = 'Svg' in elements ? elements.Svg : undefined
     const state = await read($, list)
     const open = await read($, detail)
     const now = Date.now()
@@ -254,19 +334,60 @@ export const register: Register = on => {
           {cleanMarkdown(issue.body) ? (
             <Markdown text={cleanMarkdown(issue.body)} />
           ) : (
-            <Text dimColor>Без описания</Text>
+            open.attachments.length === 0 && <Text dimColor>Без описания</Text>
+          )}
+          {open.attachments.length > 0 && (
+            <Box flexDirection="column" gap={1}>
+              <Text bold>Вложения ({open.attachments.length})</Text>
+              {open.attachments.map((a, n) =>
+                a.kind === 'image' && a.status === 'ready' && a.svg && Svg ? (
+                  <Box key={`att-${n}`} flexDirection="column">
+                    <Svg source={a.svg} alt={a.name} />
+                    <Link href={a.url} label={`${a.name} · открыть`} />
+                  </Box>
+                ) : a.kind === 'image' && a.status === 'loading' ? (
+                  <Text key={`att-${n}`} dimColor>
+                    🖼 {a.name}: загружаю…
+                  </Text>
+                ) : (
+                  <Link key={`att-${n}`} href={a.url} label={`${a.kind === 'image' ? '🖼' : '📎'} ${a.name}`} />
+                ),
+              )}
+            </Box>
           )}
           <Text bold>Комментарии{open.status === 'ready' ? ` (${open.comments.length})` : ''}</Text>
           {open.status === 'loading' && <Text dimColor>Загружаю…</Text>}
           {open.status === 'ready' && open.comments.length === 0 && <Text dimColor>Пока нет</Text>}
-          {open.comments.map(c => (
-            <Box flexDirection="column">
-              <Text dimColor>
-                {c.author} · {ago(c.createdAt, now)}
+          {open.comments.map((c, n) => (
+            <Box key={`comment-${n}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+              <Text>
+                <Text bold>{c.author}</Text>
+                <Text dimColor> · {ago(c.createdAt, now)}</Text>
               </Text>
               <Markdown text={cleanMarkdown(c.body) || '—'} />
             </Box>
           ))}
+          <Box flexDirection="column" gap={1}>
+            <Input
+              key={`draft-${open.draftKey}`}
+              rows={3}
+              value={open.draft}
+              placeholder="Написать комментарий…"
+              submitLabel="Отправить"
+              onInput={value => setDetail($, d => (d?.number === issue.number ? { ...d, draft: value } : d))}
+              onSubmit={value => sendComment($, issue.number, value)}
+            />
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Button
+                key="send"
+                variant="primary"
+                onPress={async () => sendComment($, issue.number, (await read($, detail))?.draft ?? '')}
+              >
+                {open.isSending ? 'Отправляю…' : 'Отправить'}
+              </Button>
+              <Text dimColor>от имени {repo.via === 'cli' ? 'вашего входа в ' + (repo.provider === 'github' ? 'gh' : 'glab') : 'вашего входа в git'}</Text>
+            </Box>
+          </Box>
         </Box>
       )
     }
@@ -295,16 +416,25 @@ export const register: Register = on => {
         {state.status === 'error' && <Text color="error">{state.error}</Text>}
         {state.status === 'loading' && shown.length === 0 && <Text dimColor>Загружаю…</Text>}
         {state.status === 'ready' && shown.length === 0 && <Text dimColor>Открытых issues нет</Text>}
-        <Box flexDirection="column">
+        <Box flexDirection="column" gap={1}>
           {shown.map(i => (
-            <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
-              <Text color="success">●</Text>
-              {` #${i.number} ${i.title} `}
-              <Text dimColor>
-                {ago(i.updatedAt, now)}
+            <Box key={`card-${i.number}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+              <Button key={`issue-${i.number}`} plain onPress={() => openIssue($, i)}>
+                <Text bold wrap="truncate-end">
+                  {i.title}
+                </Text>
+              </Button>
+              <Text dimColor wrap="truncate-end">
+                <Text color="success">●</Text>
+                {` #${i.number} · ${i.author} · ${ago(i.updatedAt, now)}`}
                 {i.comments ? ` · 💬 ${i.comments}` : ''}
               </Text>
-            </Button>
+              {i.labels.length > 0 && (
+                <Text color="suggestion" wrap="truncate-end">
+                  {i.labels.map(l => `#${l}`).join('  ')}
+                </Text>
+              )}
+            </Box>
           ))}
         </Box>
       </Box>
