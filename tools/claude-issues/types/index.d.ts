@@ -89,6 +89,7 @@ declare module 'claude-code' {
       detail: Shaped<IssuesDetail | null>
       /** Whether the Issues pane is up; the row above the prompt shows while it is not. */
       isPaneOpen: boolean
+      folded: Shaped<{ open: boolean; closed: boolean }>
     }
   }
 }

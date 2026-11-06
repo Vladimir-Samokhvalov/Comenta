@@ -137,12 +137,20 @@ test('the pane lists issues, opens one with comments, closes it, and inserts it'
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'refresh' })
 
-    expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
+    expect(await ui.find({ key: 'group-open', text: 'Открытые · 1 ⌄' })).toBeDefined()
     expect(await ui.find({ type: 'Link', text: 'acme/site' })).toBeUndefined()
     const issuesLink = await ui.find({ type: 'Link', text: 'GitHub' })
     expect((issuesLink as { props?: { href?: string } } | undefined)?.props?.href).toBe('https://github.com/acme/site/issues')
     expect(await ui.find({ key: 'issue-6' })).toBeUndefined()
+    // Closed issues sit in their own group, folded until pressed.
     expect(await ui.find({ key: 'issue-3' })).toBeUndefined()
+    if (surface === 'desktop') {
+      expect(calls.some(c => c.includes('state=closed&'))).toBe(true)
+      await ui.press({ key: 'group-closed' })
+      expect(await ui.find({ key: 'issue-3' })).toBeDefined()
+      await ui.press({ key: 'group-closed' })
+      expect(await ui.find({ key: 'group-closed', text: 'Закрытые · 1 ›' })).toBeDefined()
+    }
 
     await ui.press({ key: 'issue-7' })
     expect(await ui.find({ type: 'Text', text: /Комментарии \(1\)/ })).toBeDefined()
@@ -161,8 +169,11 @@ test('the pane lists issues, opens one with comments, closes it, and inserts it'
     }
 
     await ui.press({ key: 'back' })
-    // Closed on the terminal pass: no longer listed.
-    if (surface === 'terminal') expect(await ui.find({ key: 'issue-7' })).toBeUndefined()
+    // Closed on the terminal pass: moved to the folded «Закрытые» group.
+    if (surface === 'terminal') {
+      expect(await ui.find({ key: 'issue-7' })).toBeUndefined()
+      expect(await ui.find({ key: 'group-closed', text: 'Закрытые · 2 ›' })).toBeDefined()
+    }
     else expect(await ui.find({ key: 'issue-7' })).toBeDefined()
     await ui.unmount()
   }
@@ -202,7 +213,7 @@ test('a GitLab repository is read through glab, system notes left out', async ($
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
+  expect(await ui.find({ key: 'group-open', text: 'Открытые · 1 ⌄' })).toBeDefined()
   const issuesLink = await ui.find({ type: 'Link', text: 'GitLab' })
   expect((issuesLink as { props?: { href?: string } } | undefined)?.props?.href).toBe(
     'https://gitlab.example.ru/group/app/-/issues',
@@ -257,7 +268,7 @@ test('without gh the login git keeps is used, straight to the API', async ($, on
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'refresh' })
   expect(credentialInput).toBe('protocol=https\nhost=github.com\n\n')
-  expect(await ui.find({ type: 'Text', text: /открытых: 1/ })).toBeDefined()
+  expect(await ui.find({ key: 'group-open', text: 'Открытые · 1 ⌄' })).toBeDefined()
   expect(requests[0]?.auth).toBe('Bearer gho_secret')
 
   await ui.press({ key: 'issue-7' })
@@ -319,7 +330,7 @@ test('without a login the panel asks for a token, checks it and stores it throug
   // A good one is stored through git, and the list loads.
   await ui.input({ key: 'token-1', text: 'glpat-good', kind: 'submit' })
   expect(stored).toEqual(['protocol=https\nhost=gitlab.acme.dev\nusername=oauth2\npassword=glpat-good\n\n'])
-  expect(await ui.find({ type: 'Text', text: /Открытых issues нет/ })).toBeDefined()
+  expect(await ui.find({ key: 'group-open', text: 'Открытые · 0 ⌄' })).toBeDefined()
   await ui.unmount()
 })
 

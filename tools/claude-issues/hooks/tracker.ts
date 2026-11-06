@@ -415,30 +415,41 @@ export function fromGitlabNote(raw: Json): Comment | undefined {
 
 // ---------------------------------------------------------------- calls
 
-/** Open issues, most recently updated first, PRs/MRs left out. */
+/** How many recently closed issues the list's «Закрытые» group shows. */
+export const MAX_CLOSED = 50
+
+/** Open issues, then the most recently closed ones, each most recently updated first, PRs/MRs left out. */
 export async function listIssues(io: Io, repo: Repo): Promise<Issue[]> {
+  const open = await listByState(io, repo, 'open', MAX_ISSUES)
+  const closed = await listByState(io, repo, 'closed', MAX_CLOSED)
+  const seen = new Set<number>()
+  return [...open, ...closed].filter(i => !seen.has(i.number) && (seen.add(i.number), true))
+}
+
+async function listByState(io: Io, repo: Repo, state: 'open' | 'closed', max: number): Promise<Issue[]> {
   const issues: Issue[] = []
-  for (let page = 1; issues.length < MAX_ISSUES; page++) {
+  const per = Math.min(PAGE, max)
+  for (let page = 1; issues.length < max; page++) {
     const batch =
       repo.provider === 'github'
         ? await api(
             io,
             repo,
-            `repos/${repo.path}/issues?state=open&sort=updated&direction=desc&per_page=${PAGE}&page=${page}`,
+            `repos/${repo.path}/issues?state=${state}&sort=updated&direction=desc&per_page=${per}&page=${page}`,
           )
         : await api(
             io,
             repo,
-            `${gitlabProject(repo)}/issues?state=opened&order_by=updated_at&sort=desc&per_page=${PAGE}&page=${page}`,
+            `${gitlabProject(repo)}/issues?state=${state === 'open' ? 'opened' : 'closed'}&order_by=updated_at&sort=desc&per_page=${per}&page=${page}`,
           )
     if (!Array.isArray(batch)) break
     for (const raw of batch) {
       const issue = repo.provider === 'github' ? fromGithubIssue(raw) : fromGitlabIssue(raw)
       if (issue) issues.push(issue)
     }
-    if (batch.length < PAGE) break
+    if (batch.length < per) break
   }
-  return issues.slice(0, MAX_ISSUES)
+  return issues.slice(0, max)
 }
 
 export async function listComments(io: Io, repo: Repo, number: number): Promise<Comment[]> {
