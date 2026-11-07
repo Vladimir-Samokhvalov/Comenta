@@ -567,6 +567,7 @@ test('ticked issues are closed or reopened from the selection bar', async ($, on
       calls.push(`${endpoint} ${argv.filter(a => a.startsWith('state=')).join(' ')}`)
       return ok({})
     }
+    throw new Error(`unexpected ${endpoint}`)
   })
   on('ui.toast', () => ({ value: undefined }))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
