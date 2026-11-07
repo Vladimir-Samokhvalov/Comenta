@@ -127,6 +127,12 @@ async function togglePane($: EngineInterface): Promise<void> {
 /** A translucent grey that reads on light and dark themes alike. */
 const HOVER_BACKING = 'rgba(128, 128, 128, 0.18)'
 
+/** The text cut to `room` characters, with an ellipsis when cut. */
+function cut(text: string, room: number): string {
+  const chars = [...text]
+  return chars.length <= room ? text : chars.slice(0, room - 1).join('') + '…'
+}
+
 /** The tracker's own list of the repository's issues. */
 function issuesPage(repo: IssuesRepo): string {
   return repo.provider === 'github' ? `${repo.webUrl}/issues` : `${repo.webUrl}/-/issues`
@@ -690,6 +696,9 @@ export const register: Register = on => {
       .sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt))
     const fold = await read($, folded)
     const sel = await read($, selection)
+    // Room for a title: the pane less the mark, the gaps and the age.
+    const columns = (e.props as { bodyColumns?: number }).bodyColumns
+    const titleRoom = typeof columns === 'number' && columns > 0 ? Math.max(10, columns - 14) : 40
     const picked = state.issues.filter(i => sel.numbers.includes(i.number))
     // Rows like the Threads list: a status mark that turns into a checkbox
     // under the pointer, the title (opens the card), and how long ago it
@@ -725,7 +734,8 @@ export const register: Register = on => {
           )}
           <Box flexGrow={1} flexShrink={1}>
             <Button key={`issue-${i.number}`} plain dimColor={i.state === 'closed'} onPress={() => openIssue($, i)}>
-              <Text wrap="truncate-end">{i.title}</Text>
+              {/* A desktop button keeps no wrap style: the title is cut here. */}
+              {cut(i.title, titleRoom)}
             </Button>
           </Box>
           <Text dimColor>{ago(i.updatedAt, now)}</Text>
@@ -733,16 +743,19 @@ export const register: Register = on => {
       )
     }
     const group = (key: 'open' | 'closed', title: string, issues: IssuesIssue[]) => (
-      <Box key={`group-${key}`} flexDirection="column">
-        <Button
-          key={`group-${key}`}
-          plain
-          dimColor
-          hover={{ backgroundColor: HOVER_BACKING }}
-          onPress={() => toggleGroup($, key)}
-        >
-          {`${title} · ${issues.length} ${fold[key] ? '›' : '⌄'}`}
-        </Button>
+      <Box flexDirection="column">
+        {/* Its own hover scope: a pointer on a row must not light the header. */}
+        <Box key={`group-head-${key}`} flexDirection="row">
+          <Button
+            key={`group-${key}`}
+            plain
+            dimColor
+            hover={{ backgroundColor: HOVER_BACKING }}
+            onPress={() => toggleGroup($, key)}
+          >
+            {`${title} · ${issues.length} ${fold[key] ? '›' : '⌄'}`}
+          </Button>
+        </Box>
         {!fold[key] && issues.map(row)}
       </Box>
     )
