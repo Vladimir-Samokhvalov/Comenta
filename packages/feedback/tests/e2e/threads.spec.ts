@@ -7,14 +7,15 @@ const asUser = async (page: Page, user: MockUser) => {
   expect(await page.evaluate(() => (window as unknown as { fb: { refreshSignIn(): Promise<boolean> } }).fb.refreshSignIn())).toBe(true);
 };
 
-/** Reply in the open thread; resolves with the POSTed reply. */
+/** Reply in the open thread (then close it with ✓ when `resolve`); resolves with the POSTed reply. */
 async function reply(page: Page, text: string, resolve = false) {
   const w = widget(page);
   await w.replyBox.fill(text);
   const req = page.waitForRequest((r) => /\/api\/feedback\/[^/]+\/replies$/.test(r.url()) && r.method() === 'POST');
-  await (resolve ? w.replyResolveBtn : w.replyBtn).click();
+  await w.replyBtn.click();
   const body = (await req).postDataJSON();
   await expect(w.replyBox).toHaveValue('');
+  if (resolve) await w.resolveBtn.click();
   return body;
 }
 
@@ -58,7 +59,7 @@ test.describe('threads', () => {
     await expect(w.msgs).toHaveCount(2);
   });
 
-  test('"reply and resolve" closes the thread; a later reply keeps it resolved; reopen by button', async ({ page }) => {
+  test('✓ closes the thread; a later reply keeps it resolved; reopen by button', async ({ page }) => {
     await openDemo(page, '', 'anna');
     const w = widget(page);
     await comment(page, '#inc', 'Кнопка не работает');
@@ -70,7 +71,7 @@ test.describe('threads', () => {
     expect((await statusReq).postDataJSON()).toMatchObject({ status: 'resolved', by: { id: 'keycloak:u-vladimir', role: 'owner' } });
     await expect(w.status).toHaveText('Закрыт');
     await expect(page.locator('comenta-feedback .ph-event')).toContainText('Вы закрыли');
-    await expect(w.replyResolveBtn).toBeHidden();
+    await expect(w.resolveBtn).toHaveAttribute('aria-label', 'Открыть снова');
 
     // a reply into a resolved thread does not reopen it
     await reply(page, 'И ещё обновили текст');
@@ -91,7 +92,7 @@ test.describe('threads', () => {
     await expect(w.items).toHaveCount(0); // "Открытые" by default
     await page.locator('comenta-feedback .ph-filter[data-filter="resolved"]').click();
     await expect(w.items).toHaveCount(1);
-    await expect(w.items.first()).toContainText('💬 2 · Владимир');
+    await expect(w.items.first().locator('.ph-replies')).toHaveText('2 ответа');
     await w.items.first().click();
 
     // reopen
@@ -108,13 +109,11 @@ test.describe('threads', () => {
     await w.pins.first().click();
     await expect(w.replyBox).toBeVisible();
     await expect(w.resolveBtn).toHaveCount(0);
-    await expect(w.replyResolveBtn).toBeHidden();
     await page.keyboard.press('Escape');
 
     await comment(page, '#counter', 'Комментарий Анны');
     await w.pins.nth(1).click();
     await expect(w.resolveBtn).toBeVisible();
-    await expect(w.replyResolveBtn).toBeVisible();
   });
 
   test('edit and delete own replies; others have no tools; Esc leaves editing first', async ({ page }) => {
@@ -248,7 +247,9 @@ test.describe('threads', () => {
     await expect(w.pins).toHaveCount(1);
     await w.pins.first().click();
     await w.replyBox.fill('Локальный ответ');
-    await w.replyResolveBtn.click();
+    await w.replyBtn.click();
+    await expect(w.msgs).toHaveCount(2);
+    await w.resolveBtn.click();
     await expect(w.status).toHaveText('Закрыт');
     await page.reload();
     await w.more.click();

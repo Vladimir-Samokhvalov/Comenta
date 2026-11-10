@@ -1,5 +1,5 @@
 import type { FeedbackLabels, FeedbackPayload } from '../types';
-import { checkIcon, closeIcon, eyeIcon, eyeOffIcon, h, listIcon, signOutIcon } from './h';
+import { checkIcon, closeIcon, eyeIcon, eyeOffIcon, h, listIcon, replyIcon, signOutIcon } from './h';
 import { displayName } from './thread';
 import { formatDuration } from '../core/recorder';
 
@@ -94,22 +94,28 @@ export interface PanelHandlers {
   onClose: () => void;
 }
 
-/** "My comments" list. */
+/**
+ * The comment list: a popup over the bar, or (`parent` null) the left column of the
+ * expanded thread, where the open thread's row is highlighted (`active`).
+ */
 export class Panel {
   readonly el: HTMLDivElement;
   tab: 'page' | 'all' = 'page';
   filter: PanelFilter = 'open';
+  /** id of the thread shown next to the list. */
+  active: string | null = null;
   private readonly list: HTMLDivElement;
   private readonly tabs: Record<'page' | 'all', HTMLButtonElement>;
   private readonly filters: Record<PanelFilter, HTMLButtonElement>;
 
   constructor(
     private readonly doc: Document,
-    parent: HTMLElement,
+    parent: HTMLElement | null,
     private readonly labels: FeedbackLabels,
     private readonly handlers: PanelHandlers,
   ) {
     const d = doc;
+    const embedded = !parent;
     const tab = (key: 'page' | 'all', text: string) => {
       const b = h(d, 'button', { type: 'button', role: 'tab', class: 'ph-tab', 'data-tab': key }, [text]);
       b.addEventListener('click', () => {
@@ -130,10 +136,10 @@ export class Panel {
       return b;
     };
     this.filters = { open: filter('open', labels.filterOpen), resolved: filter('resolved', labels.filterResolved), all: filter('all', labels.filterAll) };
-    const close = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-panel-close', 'aria-label': labels.close }, [closeIcon(d)]);
-    close.addEventListener('click', () => handlers.onClose());
+    const close = embedded ? null : h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-panel-close', 'aria-label': labels.close }, [closeIcon(d)]);
+    close?.addEventListener('click', () => handlers.onClose());
     this.list = h(d, 'div', { class: 'ph-list', role: 'list' });
-    this.el = h(d, 'div', { class: 'ph-panel', role: 'dialog', 'aria-label': labels.panelTitle, hidden: true }, [
+    this.el = h(d, 'div', embedded ? { class: 'ph-panel ph-side', role: 'region', 'aria-label': labels.panelTitle } : { class: 'ph-panel', role: 'dialog', 'aria-label': labels.panelTitle, hidden: true }, [
       h(d, 'div', { class: 'ph-panel-head' }, [
         h(d, 'span', { class: 'ph-panel-title' }, [labels.panelTitle]),
         h(d, 'div', { class: 'ph-seg', role: 'tablist' }, [this.tabs.page, this.tabs.all]),
@@ -143,7 +149,7 @@ export class Panel {
       this.list,
     ]);
     this.el.addEventListener('keydown', (e) => e.stopPropagation());
-    parent.append(this.el);
+    parent?.append(this.el);
     this.syncTabs();
   }
 
@@ -168,26 +174,33 @@ export class Panel {
     }
     const rows = items.map((it) => {
       const p = it.payload;
-      const meta: Array<Node | string> = [...(p.kind ? [`${this.labels.kindEmoji[p.kind]} ${this.labels.kinds[p.kind] ?? p.kind}`, ' · '] : []), relativeTime(p.createdAt, this.labels.locale), ' · '];
-      for (const a of p.attachments ?? []) {
-        meta.push(h(d, 'span', { class: 'ph-att', 'data-kind': a.kind }, [`${a.kind === 'audio' ? this.labels.recVoiceLabel : this.labels.recScreenLabel} ${formatDuration(a.durationMs)}`]), ' · ');
-      }
-      if (p.issue?.unavailable) meta.push(h(d, 'span', { class: 'ph-issue-mark', 'data-state': 'unavailable', title: this.labels.issueLink(p.issue) }, [this.labels.issueUnavailable]), ' · ');
-      const replies = p.replies ?? [];
-      if (replies.length) {
-        const last = replies[replies.length - 1];
-        meta.push(h(d, 'span', { class: 'ph-replies', title: this.labels.replies(replies.length) }, [`💬 ${replies.length} · ${displayName(last.author, this.labels)}`]), ' · ');
-      }
-      if (p.status === 'resolved') meta.push(h(d, 'span', { class: 'ph-resolved-mark' }, [this.labels.statusResolved]), ' · ');
-      if (it.n === null) meta.push(h(d, 'span', { class: 'ph-path' }, [pathOf(p.page.url)]));
-      else if (it.missing) meta.push(h(d, 'span', { class: 'ph-missing' }, [this.labels.notFound]));
-      else meta.push(h(d, 'code', {}, [shortSelector(p.target.selector)]));
+      const L = this.labels;
       const resolved = p.status === 'resolved';
-      const cls = `ph-item${it.missing ? ' ph-item-missing' : ''}${resolved ? ' ph-item-resolved' : ''}${it.unread ? ' ph-item-unread' : ''}`;
-      const row = h(d, 'button', { type: 'button', role: 'listitem', class: cls, 'data-id': p.id, 'aria-description': it.unread ? this.labels.unread(1) : null }, [
-        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind ?? null, 'data-resolved': resolved ? '' : null }, [resolved ? '✓' : it.n === null ? '' : String(it.n)]),
-        h(d, 'span', { class: 'ph-item-body' }, [h(d, 'span', { class: 'ph-item-text' }, [p.text || (p.attachments?.[0]?.kind === 'screen' ? this.labels.recScreen : this.labels.recVoice)]), h(d, 'span', { class: 'ph-item-meta' }, meta)]),
+      // first line: author and time; then the text; then replies and where it is
+      const head = h(d, 'span', { class: 'ph-item-head' }, [
+        h(d, 'span', { class: 'ph-item-author' }, [displayName(p.author, L)]),
+        h(d, 'span', { class: 'ph-item-time' }, [relativeTime(p.createdAt, L.locale)]),
         it.unread ? h(d, 'span', { class: 'ph-unread-dot', 'aria-hidden': 'true' }) : null,
+      ]);
+      const meta: Array<Node | string> = [];
+      const add = (n: Node | string) => {
+        if (meta.length) meta.push(' · ');
+        meta.push(n);
+      };
+      const replies = p.replies ?? [];
+      if (replies.length) add(h(d, 'span', { class: 'ph-replies', title: L.replies(replies.length) }, [replyIcon(d), L.replies(replies.length)]));
+      if (p.kind) add(`${L.kindEmoji[p.kind]} ${L.kinds[p.kind] ?? p.kind}`);
+      for (const a of p.attachments ?? []) add(h(d, 'span', { class: 'ph-att', 'data-kind': a.kind }, [`${a.kind === 'audio' ? L.recVoiceLabel : L.recScreenLabel} ${formatDuration(a.durationMs)}`]));
+      if (p.issue?.unavailable) add(h(d, 'span', { class: 'ph-issue-mark', 'data-state': 'unavailable', title: L.issueLink(p.issue) }, [L.issueUnavailable]));
+      if (resolved) add(h(d, 'span', { class: 'ph-resolved-mark' }, [L.statusResolved]));
+      if (it.n === null) add(h(d, 'span', { class: 'ph-path' }, [pathOf(p.page.url)]));
+      else if (it.missing) add(h(d, 'span', { class: 'ph-missing' }, [L.notFound]));
+      else add(h(d, 'code', {}, [shortSelector(p.target.selector)]));
+      const active = p.id === this.active;
+      const cls = `ph-item${it.missing ? ' ph-item-missing' : ''}${resolved ? ' ph-item-resolved' : ''}${it.unread ? ' ph-item-unread' : ''}${active ? ' ph-item-active' : ''}`;
+      const row = h(d, 'button', { type: 'button', role: 'listitem', class: cls, 'data-id': p.id, 'aria-current': active ? 'true' : null, 'aria-description': it.unread ? L.unread(1) : null }, [
+        h(d, 'span', { class: 'ph-num', 'data-kind': p.kind ?? null, 'data-resolved': resolved ? '' : null }, [resolved ? '✓' : it.n === null ? '' : String(it.n)]),
+        h(d, 'span', { class: 'ph-item-body' }, [head, h(d, 'span', { class: 'ph-item-text' }, [p.text || (p.attachments?.[0]?.kind === 'screen' ? L.recScreen : L.recVoice)]), h(d, 'span', { class: 'ph-item-meta' }, meta)]),
       ]);
       row.addEventListener('click', () => this.handlers.onPick(it));
       return row;

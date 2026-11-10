@@ -31,6 +31,12 @@ export class Popover {
   private submitting = false;
   /** Set by the controller: re-run positioning when the popover changes size. */
   reposition: (() => void) | null = null;
+  /** The thread is shown as a side panel, with `side` (the comment list) to its left. */
+  expanded = false;
+  /** Set by the controller: the comment list shown in the side panel. */
+  side: HTMLElement | null = null;
+  /** Set by the controller: the side panel opened or closed. */
+  onExpand: ((on: boolean) => void) | null = null;
 
   constructor(
     private readonly doc: Document,
@@ -64,6 +70,7 @@ export class Popover {
       return;
     }
     this.reset();
+    this.setExpandedClass(false);
     const d = this.doc;
     this.mode = 'compose';
     this.el.setAttribute('aria-label', this.labels.dialog);
@@ -118,6 +125,7 @@ export class Popover {
     composer.focus();
   }
 
+  /** Open a thread; stays in the side panel when it is already expanded (picked from its list). */
   openThread(model: ThreadModel, handlers: ThreadHandlers) {
     this.reset();
     this.mode = 'view';
@@ -126,13 +134,46 @@ export class Popover {
     this.el.classList.add('ph-popover-thread');
     this.thread = new Thread(
       this.doc,
-      { labels: this.labels, record: this.record, dockHost: this.dockHost, onDock: this.onDock, reposition: () => this.reposition?.() },
+      {
+        labels: this.labels,
+        record: this.record,
+        dockHost: this.dockHost,
+        onDock: this.onDock,
+        reposition: () => this.reposition?.(),
+        expanded: this.expanded,
+        onExpand: this.side ? () => this.setExpanded(!this.expanded) : undefined,
+      },
       model,
       handlers,
     );
-    this.el.replaceChildren(...this.thread.nodes);
+    this.place();
     this.el.hidden = false;
     this.thread.focus();
+  }
+
+  /** Thread at the pin ⇄ side panel with the comment list. */
+  setExpanded(on: boolean) {
+    if (this.mode !== 'view' || on === this.expanded) return;
+    this.setExpandedClass(on);
+    this.thread?.setExpanded(on);
+    this.place();
+    this.onExpand?.(on);
+    this.thread?.focus();
+    this.reposition?.();
+  }
+
+  private setExpandedClass(on: boolean) {
+    this.expanded = on;
+    this.el.classList.toggle('ph-popover-expanded', on);
+    // drop the pin position: expanded, CSS places it; collapsed, the next layout does
+    this.el.style.removeProperty('transform');
+  }
+
+  /** Put the thread (and, expanded, the list next to it) into the popover. Moving nodes keeps their listeners. */
+  private place() {
+    if (!this.thread) return;
+    if (this.expanded && this.side) this.el.replaceChildren(this.side, h(this.doc, 'div', { class: 'ph-main' }, this.thread.nodes));
+    else this.el.replaceChildren(...this.thread.nodes);
   }
 
   /** Esc: cancel a recording, then reply editing; true if something was cancelled. */
@@ -142,8 +183,11 @@ export class Popover {
   }
 
   close() {
+    const was = this.expanded;
     this.reset();
+    this.setExpandedClass(false);
     this.el.hidden = true;
+    if (was) this.onExpand?.(false);
   }
 
   private reset() {
@@ -179,6 +223,7 @@ export class Popover {
   }
 
   position(anchor: Rect, viewport: { width: number; height: number }) {
+    if (this.expanded) return; // the side panel is placed by CSS
     const w = this.el.offsetWidth || 344;
     const hgt = this.el.offsetHeight || 180;
     const p = placePopover(anchor, { width: w, height: hgt }, viewport);

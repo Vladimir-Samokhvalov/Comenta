@@ -74,3 +74,27 @@ export const checkIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M3 8.5 6.5 1
 export const reopenIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3', '1.5');
 export const pencilIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M10.5 2.5l3 3L6 13H3v-3z', '1.5');
 export const signOutIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6M10.5 11 13.5 8l-3-3M13.5 8H6', '1.5');
+export const circleCheckIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M8 1.75a6.25 6.25 0 1 0 0 12.5 6.25 6.25 0 0 0 0-12.5zM5.4 8.2l1.8 1.8 3.4-3.9', '1.4');
+export const globeIcon = (doc: Document) =>
+  icon(doc, '0 0 16 16', 'M8 1.75a6.25 6.25 0 1 0 0 12.5 6.25 6.25 0 0 0 0-12.5zM1.75 8h12.5M8 1.75c2.1 2.3 2.1 10.2 0 12.5M8 1.75c-2.1 2.3-2.1 10.2 0 12.5', '1.3');
+export const expandIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9', '1.4');
+export const collapseIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M2.5 9.5h4v4M6.5 9.5 2 14M13.5 6.5h-4v-4M9.5 6.5 14 2', '1.4');
+export const crumbIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M6 3.5 10.5 8 6 12.5', '1.5');
+export const sendIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M13 3v4.5a2 2 0 0 1-2 2H3M6 6.5l-3 3 3 3', '1.5');
+export const replyIcon = (doc: Document) => icon(doc, '0 0 16 16', 'M6 10 2.5 6.5 6 3M2.5 6.5H9a4.5 4.5 0 0 1 4.5 4.5v1.5', '1.5');
+
+/** Wavy hairline for day separators: a repeating SVG pattern, so the waves keep their shape at any width. */
+export function waveLine(doc: Document): SVGSVGElement {
+  const el = (tag: string, attrs: Record<string, string>) => {
+    const e = doc.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  const svg = el('svg', { class: 'ph-day-line', height: '6', 'aria-hidden': 'true' }) as SVGSVGElement;
+  const pattern = el('pattern', { id: 'ph-wave', width: '12', height: '6', patternUnits: 'userSpaceOnUse' });
+  pattern.append(el('path', { d: 'M0 3 Q3 0 6 3 T12 3', fill: 'none', stroke: 'currentColor', 'stroke-width': '1' }));
+  const defs = el('defs', {});
+  defs.append(pattern);
+  svg.append(defs, el('rect', { width: '100%', height: '6', fill: 'url(#ph-wave)' }));
+  return svg;
+}

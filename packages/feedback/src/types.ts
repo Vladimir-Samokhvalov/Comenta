@@ -245,9 +245,17 @@ export interface FeedbackLabels {
   reopen: string;
   reply: string;
   replyPlaceholder: string;
+  /** @deprecated No longer shown: a thread is closed with the ✓ button in its header. */
   replyAndResolve: string;
   replyTextarea: string;
   thread: string;
+  /** Header button that turns the thread into a side panel with the comment list. */
+  expand: string;
+  /** The same button in the side panel: back to the pin. */
+  collapse: string;
+  /** Day separators in a thread. */
+  today: string;
+  yesterday: string;
   edited: string;
   edit: string;
   save: string;

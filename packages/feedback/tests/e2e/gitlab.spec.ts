@@ -405,9 +405,11 @@ test.describe('GitLab issue ↔ thread sync', () => {
     await w.resolveBtn.click();
     await expect(w.status).toHaveText('Открыт');
     expect((await issue()).state).toBe('opened');
-    // "reply and close": the reply reaches the issue first
+    // reply, then close with ✓: the reply reaches the issue first
     await w.replyBox.fill('Исправлено в релизе');
-    await w.replyResolveBtn.click();
+    await w.replyBtn.click();
+    await expect(w.msgs.last()).toContainText('Исправлено в релизе');
+    await w.resolveBtn.click();
     await expect(w.status).toHaveText('Закрыт');
     expect((await issue()).state).toBe('closed');
     expect((await notes(page)).map((n) => n.body.split('\n')[0])).toEqual(['**Владимир:** Исправлено в релизе']);

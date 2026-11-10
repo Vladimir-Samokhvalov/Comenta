@@ -17,7 +17,7 @@ export interface ComposerOptions {
   onChange: () => void;
   /** Size changed: re-position the popover. */
   reposition: () => void;
-  /** Smaller field (thread replies). */
+  /** One-line field that grows (thread replies). */
   compact?: boolean;
 }
 
@@ -29,13 +29,15 @@ export class Composer {
   readonly textarea: HTMLTextAreaElement;
   readonly nameInput: HTMLInputElement | null;
   readonly nodes: HTMLElement[];
+  /** The text field's box: textarea and record button (thread replies add their send button here). */
+  readonly field: HTMLDivElement;
   readonly rec: RecordControl | null;
   private readonly errorEl: HTMLDivElement;
   docked = false;
   busy = false;
 
   constructor(d: Document, private readonly o: ComposerOptions) {
-    const ta = h(d, 'textarea', { class: `ph-textarea${o.compact ? ' ph-textarea-compact' : ''}`, rows: o.compact ? 2 : 3, 'aria-label': o.ariaLabel, placeholder: o.placeholder });
+    const ta = h(d, 'textarea', { class: `ph-textarea${o.compact ? ' ph-textarea-compact' : ''}`, rows: o.compact ? 1 : 3, 'aria-label': o.ariaLabel, placeholder: o.placeholder });
     ta.addEventListener('input', () => {
       this.autoGrow();
       o.onChange();
@@ -67,6 +69,7 @@ export class Composer {
 
     // The record button lives inside the text field, in its bottom-right corner.
     const field = h(d, 'div', { class: 'ph-field' }, [ta]);
+    this.field = field;
     if (this.rec) {
       field.setAttribute('data-rec', '');
       field.append(this.rec.button);

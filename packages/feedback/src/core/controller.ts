@@ -55,6 +55,8 @@ export class Controller {
   private popover: Popover | null = null;
   private menu: Menu | null = null;
   private panel: Panel | null = null;
+  /** The comment list in the expanded thread (left column). */
+  private side: Panel | null = null;
   private signIn: SignIn | null = null;
   /** `off`: no `auth` option; otherwise whether the visitor is signed in (`unknown` until `/me` answered). */
   private authState: 'off' | 'unknown' | 'out' | 'in' = 'off';
@@ -178,6 +180,23 @@ export class Controller {
       (docked) => this.onDock(docked),
     );
     this.popover.reposition = () => this.scheduleLayout();
+    this.side = new Panel(this.doc, null, this.labels, {
+      onTab: (tab) => {
+        if (tab === 'all') void this.loadAll();
+        this.renderPanel();
+      },
+      onFilter: () => this.renderPanel(),
+      onPick: (item) => this.pickFromSide(item),
+      onClose: () => this.popover?.setExpanded(false),
+    });
+    this.popover.side = this.side.el;
+    this.popover.onExpand = (on) => {
+      if (on) {
+        this.renderPanel();
+        if (this.side?.tab === 'all') void this.loadAll();
+      }
+      this.scheduleLayout();
+    };
 
     const relayout = () => this.scheduleLayout();
     this.globalOffs.push(
@@ -372,6 +391,7 @@ export class Controller {
     this.popover = null;
     this.menu = null;
     this.panel = null;
+    this.side = null;
     this.comments = [];
     this.hoverEl = this.selectedEl = null;
     if (current === this) current = null;
@@ -642,9 +662,16 @@ export class Controller {
     if (returnFocus) this.view.more.focus({ preventScroll: true });
   }
 
+  /** Re-render the open comment lists: the popup over the bar and the expanded thread's column. */
   private renderPanel() {
-    const panel = this.panel;
-    if (!panel?.isOpen) return;
+    if (this.panel?.isOpen) this.renderList(this.panel);
+    if (this.side && this.popover?.expanded) {
+      this.side.active = this.popover.viewing;
+      this.renderList(this.side);
+    }
+  }
+
+  private renderList(panel: Panel) {
     const page = this.pageComments();
     const me = this.me();
     const item = (c: StoredComment): PanelItem => {
@@ -673,6 +700,15 @@ export class Controller {
     } catch (err) {
       console.warn('[feedback] adapter.listAll failed', err);
     }
+  }
+
+  /** A row in the expanded thread's list: show that thread next to the list. */
+  private pickFromSide(item: PanelItem) {
+    if (item.n === null) return this.pickFromPanel(item);
+    const c = this.comments.find((x) => x.payload.id === item.payload.id);
+    if (!c || item.missing || !c.el || this.popover?.viewing === c.payload.id) return;
+    c.el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    this.showThread(c);
   }
 
   private pickFromPanel(item: PanelItem) {
@@ -727,7 +763,15 @@ export class Controller {
       this.closePopover(true);
       return;
     }
+    // the side panel stays open: the pin's thread replaces the one next to the list
+    if (this.popover.expanded && this.popover.mode === 'view') return this.showThread(c);
     if (this.popover.isOpen) this.closePopover(false);
+    this.showThread(c);
+  }
+
+  /** Open a thread in the popover as it is (at the pin, or in the side panel when expanded). */
+  private showThread(c: StoredComment) {
+    if (!this.popover) return;
     this.threadSince = this.seen.since(c.payload.id);
     this.popover.openThread(this.threadModel(c), this.threadHandlers(c));
     this.markSeen(c);

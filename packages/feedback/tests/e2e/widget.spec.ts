@@ -523,7 +523,7 @@ test.describe('emoji category', () => {
     expect(await pin.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(201, 100, 66)');
     await page.keyboard.press('Escape');
     await pin.click();
-    await expect(page.locator('comenta-feedback .ph-badge')).toHaveText('#1');
+    await expect(page.locator('comenta-feedback .ph-msg-kind')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await page.evaluate(() => (window as any).fb.showComments());
     await expect(page.locator('comenta-feedback .ph-item-meta').first()).not.toContainText('Предложение');
@@ -567,7 +567,7 @@ test.describe('emoji category', () => {
     await page.keyboard.press('Escape');
     await expect(w.pins.first()).toHaveAttribute('data-kind', 'question');
     await w.pins.first().click();
-    await expect(page.locator('comenta-feedback .ph-badge')).toHaveText('#1 · 🤔 Вопрос');
+    await expect(page.locator('comenta-feedback .ph-msg-kind')).toHaveText('🤔 Вопрос');
     await page.keyboard.press('Escape');
     await page.evaluate(() => (window as any).fb.showComments());
     await expect(page.locator('comenta-feedback .ph-item-meta').first()).toContainText('🤔 Вопрос');

@@ -460,7 +460,6 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await expect(event).toHaveText(/^octo-dev закрыл\(а\) на GitHub · \d/);
     // the button follows: reopen only, no second close
     await expect(w.resolveBtn).toHaveAttribute('aria-label', 'Открыть снова');
-    await expect(w.replyResolveBtn).toBeHidden();
     await act(page, { repo: 'acme-studio/web-app', number: 1, reopen: true });
     await expect(w.status).toHaveText('Открыт');
     await expect(event).toHaveCount(0);
@@ -493,9 +492,11 @@ test.describe('GitHub issue ↔ thread sync', () => {
     await w.resolveBtn.click();
     await expect(w.status).toHaveText('Открыт');
     expect(await issue()).toMatchObject({ state: 'open' });
-    // "reply and close": the reply reaches the issue, then the issue is closed
+    // reply, then close with ✓: the reply reaches the issue, then the issue is closed
     await w.replyBox.fill('Исправлено в релизе');
-    await w.replyResolveBtn.click();
+    await w.replyBtn.click();
+    await expect(w.msgs.last()).toContainText('Исправлено в релизе');
+    await w.resolveBtn.click();
     await expect(w.status).toHaveText('Закрыт');
     expect(await issue()).toMatchObject({ state: 'closed' });
     expect((await comments(page)).map((c) => c.body.split('\n')[0])).toEqual(['**Владимир:** Исправлено в релизе']);

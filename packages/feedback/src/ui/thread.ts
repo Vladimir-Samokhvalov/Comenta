@@ -1,7 +1,7 @@
 import type { FeedbackAttachment, FeedbackAuthor, FeedbackLabels, FeedbackPayload, FeedbackReply, FeedbackStatus } from '../types';
 import type { Recording } from '../core/recorder';
 import { sameAuthor } from '../core/identity';
-import { checkIcon, closeIcon, h, pencilIcon, reopenIcon, trashIcon } from './h';
+import { checkIcon, circleCheckIcon, closeIcon, collapseIcon, crumbIcon, expandIcon, globeIcon, h, pencilIcon, sendIcon, trashIcon, waveLine } from './h';
 import { attachmentsView, type RecordConfig } from './record';
 import { Composer } from './composer';
 
@@ -34,23 +34,31 @@ export interface ThreadEnv {
   dockHost: HTMLElement | null;
   onDock: (docked: boolean) => void;
   reposition: () => void;
+  /** Shown as a side panel with the comment list (the header button switches). */
+  expanded: boolean;
+  /** Header expand / collapse button; none when omitted. */
+  onExpand?: () => void;
 }
 
 /** Colours for other people's names, picked by a hash of their id. */
 const NAME_COLORS = 7;
 
 /**
- * A comment with its replies: Telegram-style bubbles (mine on the right), status in the header,
- * a reply field at the bottom. `update()` re-renders the header and the feed and keeps the draft.
+ * A comment with its replies, laid out like a chat thread: a breadcrumb header with icon actions
+ * (status is the ✓ icon), other people's messages as plain text under their name, mine in a bubble
+ * on the right, day separators, the linked issue above a one-line reply field.
+ * `update()` re-renders the header and the feed and keeps the draft.
  */
 export class Thread {
   readonly nodes: HTMLElement[];
   readonly composer: Composer | null;
   private readonly head: HTMLDivElement;
   private readonly feed: HTMLDivElement;
-  private readonly actions: HTMLDivElement | null;
+  /** The linked issue, above the reply field. */
+  private readonly issueBar: HTMLDivElement;
+  /** Issue bar + reply field; hidden when it has neither. */
+  private readonly replyBox: HTMLDivElement;
   private readonly replyBtn: HTMLButtonElement | null = null;
-  private readonly resolveReplyBtn: HTMLButtonElement | null = null;
   private model: ThreadModel;
   /** Reply being edited, and its draft text. */
   private editing: { id: string; draft: string } | null = null;
@@ -64,6 +72,7 @@ export class Thread {
     this.model = model;
     this.head = h(d, 'div', { class: 'ph-thread-head' });
     this.feed = h(d, 'div', { class: 'ph-feed', role: 'log', 'aria-label': L.thread, 'aria-live': 'polite', tabindex: 0 });
+    this.issueBar = h(d, 'div', { class: 'ph-issue-bar', hidden: true });
 
     if (model.canReply) {
       this.composer = new Composer(d, {
@@ -78,22 +87,27 @@ export class Thread {
         reposition: env.reposition,
         compact: true,
       });
-      this.replyBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-primary ph-reply-btn', disabled: true, title: isMac(d) ? '⌘↵' : 'Ctrl+↵' }, [L.reply]);
+      // the send button sits inside the field, after the record button
+      this.replyBtn = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-reply-btn', disabled: true, 'aria-label': L.reply, title: `${L.reply} (${isMac(d) ? '⌘↵' : 'Ctrl+↵'})` }, [sendIcon(d)]);
       this.replyBtn.addEventListener('click', () => void this.send(false));
-      this.resolveReplyBtn = h(d, 'button', { type: 'button', class: 'ph-btn ph-btn-resolve', disabled: true }, [checkIcon(d), L.replyAndResolve]);
-      this.resolveReplyBtn.addEventListener('click', () => void this.send(true));
-      this.actions = h(d, 'div', { class: 'ph-actions' }, [this.resolveReplyBtn, this.replyBtn]);
-      this.nodes = [this.head, this.feed, h(d, 'div', { class: 'ph-reply' }, [...this.composer.nodes, this.actions])];
+      this.composer.field.append(this.replyBtn);
+      this.replyBox = h(d, 'div', { class: 'ph-reply' }, [this.issueBar, ...this.composer.nodes]);
     } else {
       this.composer = null;
-      this.actions = null;
-      this.nodes = [this.head, this.feed];
+      this.replyBox = h(d, 'div', { class: 'ph-reply' }, [this.issueBar]);
     }
+    this.nodes = [this.head, this.feed, this.replyBox];
     this.render(true);
   }
 
   get viewing() {
     return this.model.payload.id;
+  }
+
+  /** Popover switched between the pin and the side panel: swap the header button. */
+  setExpanded(on: boolean) {
+    this.env.expanded = on;
+    this.render(false);
   }
 
   update(model: ThreadModel) {
@@ -219,15 +233,12 @@ export class Thread {
 
   private syncButtons() {
     const c = this.composer;
-    const open = this.model.payload.status !== 'resolved';
-    if (this.replyBtn && c) this.replyBtn.disabled = !c.ready || this.pending;
-    if (this.resolveReplyBtn && c) {
-      this.resolveReplyBtn.hidden = !(this.model.canResolve && open);
-      this.resolveReplyBtn.disabled = !c.ready || this.pending;
+    if (this.replyBtn && c) {
+      this.replyBtn.disabled = !c.ready || this.pending;
+      this.replyBtn.setAttribute('aria-busy', String(c.busy));
     }
     const rb = this.head.querySelector<HTMLButtonElement>('.ph-resolve');
     if (rb) rb.disabled = this.pending;
-    if (this.replyBtn) this.replyBtn.textContent = c?.busy ? this.env.labels.submitting : this.env.labels.reply;
   }
 
   // ---------------------------------------------------------------- rendering
@@ -239,35 +250,74 @@ export class Thread {
     const p = m.payload;
     const resolved = p.status === 'resolved';
 
-    // header: #n · category, status, resolve / reopen, close
-    const badge = p.kind ? `#${m.n} · ${L.kindEmoji[p.kind]} ${L.kinds[p.kind]}` : `#${m.n}`;
+    // header: "Comments › first line", status as an icon, then actions
     // closed on GitHub as "not planned" / duplicate: the same "Закрыт", in grey
     const closedOther = resolved && !!p.issue?.stateReason && p.issue.stateReason !== 'completed' && p.issue.state === 'closed';
     const statusTitle = resolved && p.issue?.state === 'closed' ? `${L.providerName(p.issue.provider)}: ${L.issueStateLong(p.issue)}` : null;
+    const status = resolved ? (closedOther ? 'closed-other' : 'resolved') : 'open';
+    const title = firstLine(p.text) || (p.attachments?.[0]?.kind === 'screen' ? L.recScreen : p.attachments?.length ? L.recVoice : `#${m.n}`);
     const headKids: Node[] = [
-      h(d, 'span', { class: 'ph-badge' }, [badge]),
-      h(d, 'span', { class: 'ph-status', 'data-status': resolved ? (closedOther ? 'closed-other' : 'resolved') : 'open', title: statusTitle }, [resolved ? L.statusResolved : L.statusOpen]),
+      h(d, 'nav', { class: 'ph-crumbs', 'aria-label': L.thread }, [
+        h(d, 'span', { class: 'ph-crumb-root' }, [L.panelTitle]),
+        crumbIcon(d),
+        h(d, 'span', { class: 'ph-crumb-title', title }, [title]),
+      ]),
+      // the word stays for screen readers; on screen the ✓ icon says it
+      h(d, 'span', { class: 'ph-status ph-sr', 'data-status': status, title: statusTitle }, [resolved ? L.statusResolved : L.statusOpen]),
     ];
-    if (p.issue && /^https?:\/\//.test(p.issue.url)) {
-      const i = p.issue;
-      headKids.push(h(d, 'a', { class: 'ph-issue', href: i.url, target: '_blank', rel: 'noopener noreferrer', title: `${i.repo}#${i.number}` }, [L.issueLink(i)]));
-      // the issue can't be reached any more: the status above lives in Comenta only
-      if (i.unavailable) headKids.push(h(d, 'span', { class: 'ph-issue-state', 'data-state': 'unavailable', title: `${i.repo}#${i.number}` }, [L.issueUnavailable]));
-    }
-    headKids.push(h(d, 'span', { class: 'ph-spacer' }));
     if (m.canResolve) {
       const label = resolved ? L.reopen : L.resolve;
-      const b = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-resolve', 'data-status': resolved ? 'resolved' : 'open', 'aria-label': label, title: label }, [resolved ? reopenIcon(d) : checkIcon(d)]);
+      const b = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-resolve', 'data-status': status, 'aria-label': label, title: statusTitle ?? label }, [circleCheckIcon(d)]);
       b.addEventListener('click', () => void this.toggleStatus());
       headKids.push(b);
+    } else if (resolved) {
+      headKids.push(h(d, 'span', { class: 'ph-status-icon', 'data-status': status, title: statusTitle ?? L.statusResolved, 'aria-hidden': 'true' }, [circleCheckIcon(d)]));
+    }
+    const issue = p.issue && /^https?:\/\//.test(p.issue.url) ? p.issue : null;
+    if (issue) {
+      headKids.push(h(d, 'a', { class: 'ph-icon-btn ph-issue-open', href: issue.url, target: '_blank', rel: 'noopener noreferrer', 'aria-label': L.issueLink(issue), title: L.issueLink(issue) }, [globeIcon(d)]));
+    }
+    if (this.env.onExpand) {
+      const label = this.env.expanded ? L.collapse : L.expand;
+      const x = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-expand', 'aria-label': label, title: label, 'aria-pressed': String(this.env.expanded) }, [this.env.expanded ? collapseIcon(d) : expandIcon(d)]);
+      x.addEventListener('click', () => this.env.onExpand?.());
+      headKids.push(x);
     }
     const close = h(d, 'button', { type: 'button', class: 'ph-icon-btn ph-thread-close', 'aria-label': L.close, title: L.close }, [closeIcon(d)]);
     close.addEventListener('click', () => this.handlers.close());
     headKids.push(close);
     this.head.replaceChildren(...headKids);
 
-    // feed: the comment, replies, and the "resolved" line where it happened
+    // the linked issue, above the reply field: the whole bar opens it
+    if (issue) {
+      const state = issue.unavailable
+        ? h(d, 'span', { class: 'ph-issue-state', 'data-state': 'unavailable', title: `${issue.repo}#${issue.number}` }, [L.issueUnavailable])
+        : issue.state
+          ? h(d, 'span', { class: 'ph-issue-status', 'data-state': issue.state }, [L.issueStateLong(issue)])
+          : null;
+      this.issueBar.setAttribute('data-state', issue.unavailable ? 'unavailable' : issue.state ?? 'unknown');
+      this.issueBar.replaceChildren(
+        h(d, 'span', { class: 'ph-issue-dot', 'aria-hidden': 'true' }),
+        h(d, 'a', { class: 'ph-issue', href: issue.url, target: '_blank', rel: 'noopener noreferrer', title: `${issue.repo}#${issue.number}` }, [L.issueLink(issue)]),
+        h(d, 'span', { class: 'ph-issue-repo' }, [issue.repo]),
+        ...(state ? [state] : []),
+      );
+      this.issueBar.hidden = false;
+    } else {
+      this.issueBar.hidden = true;
+      this.issueBar.replaceChildren();
+    }
+    this.replyBox.hidden = !this.composer && this.issueBar.hidden;
+
+    // feed: the comment, replies, and the "resolved" line where it happened; a separator between days
     const items: Node[] = [this.message(p, null)];
+    let lastDay = dayKey(p.createdAt);
+    const dayBreak = (iso: string) => {
+      const key = dayKey(iso);
+      if (!key || key === lastDay) return;
+      lastDay = key;
+      items.push(h(d, 'div', { class: 'ph-day', role: 'separator' }, [waveLine(d), h(d, 'span', {}, [dayLabel(iso, L)]), waveLine(d)]));
+    };
     let eventShown = false;
     const event = () => {
       eventShown = true;
@@ -277,6 +327,7 @@ export class Thread {
     };
     for (const r of p.replies ?? []) {
       if (resolved && !eventShown && p.resolvedAt && r.createdAt > p.resolvedAt) items.push(event());
+      dayBreak(r.createdAt);
       items.push(this.message(r, r));
     }
     if (resolved && !eventShown) items.push(event());
@@ -302,6 +353,11 @@ export class Thread {
 
     const bubble = h(d, 'div', { class: 'ph-bubble' });
     const external = !!reply?.origin;
+    const time = h(d, 'time', { dateTime: item.createdAt, title: fullTime(item.createdAt, L.locale) }, [formatTime(item.createdAt, L.locale)]);
+    const edited = item.updatedAt ? h(d, 'span', { class: 'ph-msg-edited' }, [L.edited]) : null;
+    const kind = !reply && m.payload.kind ? h(d, 'span', { class: 'ph-msg-kind' }, [`${L.kindEmoji[m.payload.kind]} ${L.kinds[m.payload.kind]}`]) : null;
+    // others: a header line with the name; mine: no name, time under the text
+    let head: HTMLElement | null = null;
     if (external) {
       // `ph-msg-github` is kept for styles written against it: it marks every tracker reply
       wrap.classList.add('ph-msg-github', 'ph-msg-external');
@@ -310,16 +366,21 @@ export class Thread {
       const avatar = a?.avatarUrl && /^(https?:\/\/|\/)/.test(a.avatarUrl) ? h(d, 'img', { class: 'ph-avatar', src: a.avatarUrl, alt: '', width: 14, height: 14, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null;
       const name = a?.url && /^https?:\/\//.test(a.url) ? h(d, 'a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, [displayName(a, L)]) : displayName(a, L);
       const source = reply?.link?.url && /^https?:\/\//.test(reply.link.url) ? h(d, 'a', { class: 'ph-msg-source', href: reply.link.url, target: '_blank', rel: 'noopener noreferrer' }, [L.fromTracker(reply!.origin!)]) : h(d, 'span', { class: 'ph-msg-source' }, [L.fromTracker(reply!.origin!)]);
-      bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(a) }, [avatar, name, source]));
-    } else if (!mine) bubble.append(h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [displayName(item.author, L)]));
+      head = h(d, 'div', { class: 'ph-msg-head' }, [h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(a) }, [avatar, name, source]), time, edited, kind]);
+    } else if (!mine) {
+      const who = displayName(item.author, L);
+      head = h(d, 'div', { class: 'ph-msg-head' }, [
+        h(d, 'span', { class: 'ph-initial', 'data-color': colorIndex(item.author), 'aria-hidden': 'true' }, [initial(who)]),
+        h(d, 'div', { class: 'ph-msg-name', 'data-color': colorIndex(item.author) }, [who]),
+        time,
+        edited,
+        kind,
+      ]);
+    }
+    if (head) bubble.append(head);
     if (item.text) bubble.append(h(d, 'div', { class: reply ? 'ph-msg-text' : 'ph-msg-text ph-view-text' }, [item.text]));
     if (item.attachments?.length) bubble.append(attachmentsView(d, item.attachments, L));
-    bubble.append(
-      h(d, 'div', { class: 'ph-msg-foot' }, [
-        item.updatedAt ? h(d, 'span', { class: 'ph-msg-edited' }, [L.edited]) : null,
-        h(d, 'time', { dateTime: item.createdAt, title: fullTime(item.createdAt, L.locale) }, [formatTime(item.createdAt, L.locale)]),
-      ]),
-    );
+    if (!head) bubble.append(h(d, 'div', { class: 'ph-msg-foot' }, [kind, edited, time]));
     wrap.append(bubble);
 
     if (reply && mine && !external && (m.canEdit || m.canDelete)) {
@@ -379,6 +440,36 @@ export class Thread {
 
 export function displayName(a: FeedbackAuthor | undefined, labels: FeedbackLabels): string {
   return a?.name?.trim() || labels.guest;
+}
+
+function initial(name: string): string {
+  return Array.from(name.trim())[0]?.toUpperCase() ?? '?';
+}
+
+function firstLine(text: string): string {
+  return text.trim().split('\n')[0].trim();
+}
+
+/** Local calendar day, for separators; '' for a bad date. */
+function dayKey(iso: string): string {
+  const t = new Date(iso);
+  return Number.isNaN(t.getTime()) ? '' : t.toDateString();
+}
+
+/** "Сегодня", "Вчера", "3 ноября" (with the year when it is not this one). */
+export function dayLabel(iso: string, labels: FeedbackLabels, now = new Date()): string {
+  const t = new Date(iso);
+  if (t.toDateString() === now.toDateString()) return labels.today;
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (t.toDateString() === y.toDateString()) return labels.yesterday;
+  const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long' };
+  if (t.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  try {
+    return t.toLocaleDateString(labels.locale, opts);
+  } catch {
+    return t.toDateString();
+  }
 }
 
 function colorIndex(a: FeedbackAuthor | undefined): string {

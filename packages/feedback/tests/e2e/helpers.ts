@@ -19,7 +19,6 @@ export const widget = (page: Page) => ({
   msgs: page.locator('comenta-feedback .ph-msg'),
   replyBox: page.locator('comenta-feedback .ph-reply .ph-textarea'),
   replyBtn: page.locator('comenta-feedback .ph-reply-btn'),
-  replyResolveBtn: page.locator('comenta-feedback .ph-btn-resolve'),
   resolveBtn: page.locator('comenta-feedback .ph-resolve'),
   status: page.locator('comenta-feedback .ph-status'),
   unread: page.locator('comenta-feedback .ph-unread'),
